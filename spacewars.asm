@@ -1,4 +1,4 @@
-INCLUDE Irvine32.inc
+INCLUDE Irvine/Irvine32.inc
 
 
 ; Constants
@@ -18,7 +18,6 @@ Enemy STRUCT
     posy        DWORD ?
     shootTimer  DWORD ?
     patternData DWORD ?
-
 Enemy ENDS
 
 EnemyAttack STRUCT
@@ -28,10 +27,9 @@ EnemyAttack STRUCT
     posy        DWORD ?
     velx        DWORD ?
     vely        DWORD ?
-
 EnemyAttack ENDS
 
-Boss STRUCT
+BossStruct STRUCT
     isActive    BYTE ?
     padding     BYTE 3 DUP(?)
     part1Health DWORD ?
@@ -41,13 +39,12 @@ Boss STRUCT
     phaseTimer  DWORD ?
     posx        DWORD ?
     posy        DWORD ?
-
-Boss ENDS
+BossStruct ENDS
 
 .DATA
-    enemyArr    Enemy MAX_ENEMIES DUP(<>)
-    attackArr   EnemyAttack MAX_ATTACKS DUP(<>)
-    boss        Boss <>
+    enemyArr Enemy MAX_ENEMIES DUP(<>)
+    attackArr EnemyAttack MAX_ATTACKS DUP(<>)
+    boss        BossStruct <>
 
     score       DWORD ?
 
