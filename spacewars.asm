@@ -2,348 +2,1686 @@
 .model flat, stdcall
 option casemap :none
 
-
-; MASM32 includes
+; Includes
 include C:\masm32\include\windows.inc
 include C:\masm32\include\kernel32.inc
 include C:\masm32\include\user32.inc
 include C:\masm32\include\gdi32.inc
-include C:\masm32\include\masm32.inc
 
-; Relevant libs
 includelib C:\masm32\lib\kernel32.lib
 includelib C:\masm32\lib\user32.lib
 includelib C:\masm32\lib\gdi32.lib
-includelib C:\masm32\lib\masm32.lib
 
-
-
-
+; --------------------------------
 ; Constants
+; --------------------------------
+MAX_ENEMIES        EQU 40
+MAX_BULLETS        EQU 40
+MAX_ENEMY_BULLETS  EQU 300
+MAX_STARS          EQU 120
+MAX_EXPLOSIONS     EQU 30
+MAX_POWERUPS       EQU 5
+MAX_BOSS_BEAMS     EQU 5
 
-MAX_ENEMIES     EQU 30
-MAX_ATTACKS     EQU 100
+SCREEN_WIDTH  EQU 800
+SCREEN_HEIGHT EQU 600
 
+; Colors
+COLOR_RED       EQU 000000FFh
+COLOR_GREEN     EQU 0000FF00h
+COLOR_BLUE      EQU 00FF0000h
+COLOR_YELLOW    EQU 0000FFFFh
+COLOR_ORANGE    EQU 0000A5FFh
+COLOR_MAGENTA   EQU 00FF00FFh
+COLOR_CYAN      EQU 00FFFF00h
+COLOR_BLACK     EQU 00000000h
+COLOR_WHITE     EQU 00FFFFFFh
+COLOR_LIGHTGRAY EQU 00AAAAAAh
+COLOR_DARKGRAY  EQU 00555555h
+COLOR_DARKRED   EQU 00000088h
 
-; Structs
+ENEMY_WIDTH  EQU 30
+ENEMY_HEIGHT EQU 20
+PLAYER_WIDTH  EQU 40
+PLAYER_HEIGHT EQU 20
+BULLET_WIDTH       EQU 4
+BULLET_HEIGHT      EQU 12
+ENEMY_BULLET_W     EQU 8  
+ENEMY_BULLET_H     EQU 16 
+POWERUP_SIZE       EQU 12
+POWERUP_SPEED      EQU 3
 
+STATE_PLAY EQU 0
+STATE_DEAD EQU 1
+STATE_WIN  EQU 2
+
+; --------------------------------
+; Structs (All DWORD aligned)
+; --------------------------------
 Enemy STRUCT
-    isActive    BYTE ?             ; 0 for inactive and 1 for active
-    padding     BYTE 3 DUP(?)      ; memory efficiency shi so memory aligns better chunk-wise
-    enemyType   DWORD ?
-    health      DWORD ?
-    posx        DWORD ?
-    posy        DWORD ?
-    shootTimer  DWORD ?
-    patternData DWORD ?
+    isActive DWORD ?
+    posx DWORD ?
+    posy DWORD ?
+    health DWORD ?
 Enemy ENDS
 
-EnemyAttack STRUCT
-    isActive    BYTE ?
-    padding     BYTE 3 DUP(?)
-    posx        DWORD ?
-    posy        DWORD ?
-    velx        DWORD ?
-    vely        DWORD ?
-EnemyAttack ENDS
+Bullet STRUCT
+    isActive DWORD ?
+    posx DWORD ?
+    posy DWORD ?
+    vx DWORD ?
+    vy DWORD ?
+Bullet ENDS
 
-BossStruct STRUCT
-    isActive    BYTE ?
-    padding     BYTE 3 DUP(?)
-    part1Health DWORD ?
-    part2Health DWORD ?
-    part3Health DWORD ?
-    phase       DWORD ?            ; Current Attack Pattern of Boss
-    phaseTimer  DWORD ?
-    posx        DWORD ?
-    posy        DWORD ?
-BossStruct ENDS
+PowerUp STRUCT
+    isActive DWORD ?
+    posx DWORD ?
+    posy DWORD ?
+PowerUp ENDS
 
+Star STRUCT
+    posx DWORD ?
+    posy DWORD ?
+    speed DWORD ?
+    starSize DWORD ?
+    color DWORD ?
+Star ENDS
+
+Explosion STRUCT
+    isActive DWORD ?
+    posx DWORD ?
+    posy DWORD ?
+    timer DWORD ?
+Explosion ENDS
+
+BossBeam STRUCT
+    isActive DWORD ?
+    posx DWORD ?
+    timer DWORD ?
+BossBeam ENDS
+
+; --------------------------------
 .DATA
-    enemyArr Enemy MAX_ENEMIES DUP(<>)
-    attackArr EnemyAttack MAX_ATTACKS DUP(<>)
-    boss        BossStruct <>
+enemyArr       Enemy     MAX_ENEMIES DUP(<>)
+bulletArr      Bullet    MAX_BULLETS DUP(<>)
+enemyBulletArr Bullet    MAX_ENEMY_BULLETS DUP(<>)
+powerupArr     PowerUp   MAX_POWERUPS DUP(<>)
+starArr        Star      MAX_STARS DUP(<>)
+explosionArr   Explosion MAX_EXPLOSIONS DUP(<>)
+bossBeamArr    BossBeam  MAX_BOSS_BEAMS DUP(<>)
 
-    score       DWORD ?
+; Wave 3 Data (V-Shape Formation)
+wave3X DWORD 385, 285, 485, 185, 585, 85, 685, 385, 285, 485
+wave3Y DWORD 50,  100, 100, 150, 150, 200, 200, 150, 200, 200
 
+ClassName db "SpaceGameClass",0
+AppName   db "MASM Space Game - The Boss Expansion",0
 
-    START_X     DWORD 100
-    START_Y     DWORD 50
-    SPACING_X   DWORD 60
-    SPACING_Y   DWORD 40
-    ROWS        DWORD 3
-    COLS        DWORD 10
+szGameOver db "GAME OVER",0
+szWin      db "SECTOR CLEARED! BOSS DEFEATED!",0
+szRestart  db "Press 'R' to Restart",0
 
-    ; stats for enemies in diff rows
-    HEALTH_TOP  DWORD 5
-    HEALTH_MID  DWORD 3
-    HEALTH_BOT  DWORD 1
+; Game State
+gameState   DWORD STATE_PLAY
+frameCount  DWORD 0
+currentWave DWORD 1
 
+; Enemy Stats
+enemyDir   DWORD 1
+enemySpeed DWORD 3
 
-    ; Game State Shii
-    enemyDir    DWORD 1         ; 1 for right, -1 for left
-    enemySpeed  DWORD 5         ; movement speed
-    SCREEN_WIDTH  EQU 800       ; temp screen size for console testing
-    SCREEN_HEIGHT EQU 600
-    SCREEN_MARGIN EQU 20
+; Player Stats
+playerX       DWORD 380
+playerY       DWORD 530
+playerSpeed   DWORD 8      
+shootCooldown DWORD 0
+playerHealth  DWORD 3
+weaponLevel   DWORD 1  
 
+; Boss Stats
+bossActive   DWORD 0
+bossHP       DWORD 50     
+bossShieldHP DWORD 0       
+bossState    DWORD 0
+bossTimer    DWORD 0
+bossLaserX   DWORD 0
+bossLaserDir DWORD 1
 
-    ; temp colors assigned for enemies in diff rows
+; Boss Special Attack Vars
+bossSafeX        DWORD 0
+bossSafeY        DWORD 0
+pelletX          DWORD 0
+pelletY          DWORD 0
+targetPelletX    DWORD 0
+targetPelletY    DWORD 0
+pelletActive     DWORD 0
+pelletBurstCount DWORD 0
 
+; Randomizer
+randSeed DWORD 12345678h
 
-    ; temp colors assigned for enemies in diff rows
-    COLOR_RED    EQU 000000FFh  ; Bottom (not me)
-    COLOR_GREEN  EQU 0000FF00h  ; Mid (so mehu)
-    COLOR_BLUE   EQU 00FF0000h  ; Top (me frfr)
-    COLOR_BLACK  EQU 00000000h  ; Black (background)
-    ENEMY_WIDTH  EQU 30
-    ENEMY_HEIGHT EQU 20
-
+; --------------------------------
 .CODE
 
+WinMain PROTO :DWORD,:DWORD,:DWORD,:DWORD
+WndProc PROTO :DWORD,:DWORD,:DWORD,:DWORD
 
-    ; --------------------------------
-    ;       Helper Funcs
-    ; --------------------------------
+; --- Utility Math & Random ---
+Random PROC USES edx
+    mov eax, randSeed
+    imul eax, 1103515245
+    add eax, 12345
+    and eax, 7FFFFFFFh
+    mov randSeed, eax
+    ret
+Random ENDP
 
+RandomRange PROC USES ecx edx maxVal:DWORD
+    call Random
+    shr eax, 8      
+    xor edx, edx
+    mov ecx, maxVal
+    div ecx
+    mov eax, edx
+    ret
+RandomRange ENDP
 
+; --- Graphics ---
+DrawRect PROC hdc:DWORD, px:DWORD, py:DWORD, pw:DWORD, ph:DWORD, pColor:DWORD
+    LOCAL rc:RECT
+    LOCAL hBrush:DWORD
+    mov eax, px
+    mov rc.left, eax
+    add eax, pw
+    mov rc.right, eax
+    mov eax, py
+    mov rc.top, eax
+    add eax, ph
+    mov rc.bottom, eax
+    invoke CreateSolidBrush, pColor
+    mov hBrush, eax
+    invoke FillRect, hdc, ADDR rc, hBrush
+    invoke DeleteObject, hBrush
+    ret
+DrawRect ENDP
 
-    ; Draws a damn rectangle
-    ; - Calculate the right and bottom coordinates
-    ; - Then invoke Windows API to draw the rectangle
+; --- Entity Spawning Functions ---
+SpawnExplosion PROC USES esi ecx eax pX:DWORD, pY:DWORD
+    mov esi, OFFSET explosionArr
+    mov ecx, MAX_EXPLOSIONS
+find_exp:
+    cmp [esi].Explosion.isActive, 0
+    je found_exp
+    add esi, TYPE Explosion
+    dec ecx
+    jnz find_exp
+    ret
+found_exp:
+    mov [esi].Explosion.isActive, 1
+    mov eax, pX
+    mov [esi].Explosion.posx, eax
+    mov eax, pY
+    mov [esi].Explosion.posy, eax
+    mov [esi].Explosion.timer, 15
+    ret
+SpawnExplosion ENDP
 
-    DrawRect PROC, 
-        hdc:DWORD,      ; Handle to Device Context
-        x:DWORD, 
-        y:DWORD, 
-        w:DWORD, 
-        h:DWORD,
-        color:DWORD
-    ;--------------------------------
-        local hBrush:DWORD
-        local hOldBrush:DWORD
+SpawnEnemyBullet PROC USES esi ecx eX:DWORD, eY:DWORD, vX:DWORD, vY:DWORD
+    mov esi, OFFSET enemyBulletArr
+    mov ecx, MAX_ENEMY_BULLETS
+find_eb:
+    cmp [esi].Bullet.isActive, 0
+    je found_eb
+    add esi, TYPE Bullet
+    dec ecx
+    jnz find_eb
+    ret 
+found_eb:
+    mov [esi].Bullet.isActive, 1
+    mov eax, eX
+    mov [esi].Bullet.posx, eax
+    mov eax, eY
+    mov [esi].Bullet.posy, eax
+    mov eax, vX
+    mov [esi].Bullet.vx, eax
+    mov eax, vY
+    mov [esi].Bullet.vy, eax
+    ret
+SpawnEnemyBullet ENDP
 
-        pushad
+SpawnPowerUp PROC USES esi ecx pX:DWORD, pY:DWORD
+    mov esi, OFFSET powerupArr
+    mov ecx, MAX_POWERUPS
+find_pu:
+    cmp [esi].PowerUp.isActive, 0
+    je found_pu
+    add esi, TYPE PowerUp
+    dec ecx
+    jnz find_pu
+    ret
+found_pu:
+    mov [esi].PowerUp.isActive, 1
+    mov eax, pX
+    add eax, 9
+    mov [esi].PowerUp.posx, eax
+    mov eax, pY
+    mov [esi].PowerUp.posy, eax
+    ret
+SpawnPowerUp ENDP
+
+InitWave PROC USES esi ebx edi
+    mov esi, OFFSET enemyArr
+    mov ebx, 0
+
+    .IF currentWave == 1
+        mov enemySpeed, 3
+    .ELSEIF currentWave == 2
+        mov enemySpeed, 5  
+    .ELSEIF currentWave == 3
+        mov enemySpeed, 4
+    .ELSEIF currentWave == 4
+        mov bossActive, 1
+        mov bossHP, 50
+        mov bossShieldHP, 25
+        mov bossState, 0
+        mov bossTimer, 0
+        ret 
+    .ENDIF
+
+init_loop:
+    .IF currentWave == 3
+        cmp ebx, 10
+        jge done_init
+        mov [esi].Enemy.isActive, 1
+        mov [esi].Enemy.health, 8
         
-        ; create a brush with the color and select it
-        invoke CreateSolidBrush, color
-        mov hBrush, eax
-        invoke SelectObject, hdc, hBrush
-        mov hOldBrush, eax
-
-        mov eax, x
-        add eax, w      ; Right = x + width
-        mov ebx, y
-        add ebx, h      ; Bottom = y + height
+        mov eax, ebx
+        shl eax, 2 
+        mov edi, wave3X[eax]
+        mov [esi].Enemy.posx, edi
+        mov edi, wave3Y[eax]
+        mov [esi].Enemy.posy, edi
+    .ELSE
+        cmp ebx, 30
+        jge done_init
+        mov [esi].Enemy.isActive, 1
+        mov eax, ebx
+        xor edx, edx
+        mov edi, 6
+        div edi
         
-        invoke Rectangle, hdc, x, y, eax, ebx
-        
-        ; cleanup brush to be pro
-        invoke SelectObject, hdc, hOldBrush
-        invoke DeleteObject, hBrush
-
-        popad
-        ret
-    DrawRect ENDP
-
-
-
-    ; Renders all active enemies on the screen
-    ; - Loops through the enemy array and checks if each enemy is active
-    ; - If active, determine the color based on enemy type and draw the rectangle
-
-    RenderEnemies PROC, 
-    hdc:DWORD
-    ;-------------------
-        pushad
-        mov esi, OFFSET enemyArr
-        mov ecx, MAX_ENEMIES
-
-    L_RENDER:
-        cmp [esi].Enemy.isActive, 0
-        je NEXT_ENEMY
-
-        .IF [esi].Enemy.enemyType == 2
-            mov eax, COLOR_BLUE
-        .ELSEIF [esi].Enemy.enemyType == 1
-            mov eax, COLOR_GREEN
-        .ELSE
-            mov eax, COLOR_RED
-        .ENDIF
-        
-
-        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, eax
-        
-    NEXT_ENEMY:
-        add esi, TYPE Enemy
-        loop L_RENDER
-
-        popad
-        ret
-    RenderEnemies ENDP
-
-
-
-    ; Handles collective hive movement for all enemies
-    ; - Check if any enemy is hitting the side walls
-    ; - Apply movement with direction and speed to all enemies
-    ; - If a wall was hit, move all enemies down and flip direction
-
-    UpdateEnemyMovement PROC
-    ;-------------------------
-        pushad
-        
-        mov esi, OFFSET enemyArr
-        mov ecx, MAX_ENEMIES
-        mov ebx, 0              ; Flag: 0 = No wall hit, 1 = Wall hit
-
-    L_CHECK_WALLS:
-        cmp [esi].Enemy.isActive, 0
-        je NEXT_CHECK
-        
-        mov eax, [esi].Enemy.posx
-        
-        ; Check Right Wall
-        .IF enemyDir == 1
-            add eax, enemySpeed
-            .IF eax > (SCREEN_WIDTH - SCREEN_MARGIN)
-                mov ebx, 1
-                jmp START_MOVE
+        .IF currentWave == 1
+            .IF eax <= 1
+                mov [esi].Enemy.health, 5
+            .ELSE
+                mov [esi].Enemy.health, 3
             .ENDIF
-        ; Check Left Wall
         .ELSE
-            sub eax, enemySpeed
-            .IF sdword ptr eax < SCREEN_MARGIN
-                mov ebx, 1
-                jmp START_MOVE
+            .IF eax <= 1
+                mov [esi].Enemy.health, 8
+            .ELSE
+                mov [esi].Enemy.health, 5
             .ENDIF
         .ENDIF
 
-    NEXT_CHECK:
-        add esi, TYPE Enemy
-        loop L_CHECK_WALLS
+        imul edx, 80
+        add edx, 50
+        mov [esi].Enemy.posx, edx
+        imul eax, 50
+        add eax, 50
+        mov [esi].Enemy.posy, eax
+    .ENDIF
 
-    START_MOVE:
-        mov esi, OFFSET enemyArr
-        mov ecx, MAX_ENEMIES
+    add esi, TYPE Enemy
+    inc ebx
+    jmp init_loop
+done_init:
+    ret
+InitWave ENDP
 
-    L_APPLY_MOVE:
-        cmp [esi].Enemy.isActive, 0
-        je NEXT_MOVE
+; --- Input Subroutine ---
+UpdatePlayer PROC
+    invoke GetAsyncKeyState, VK_LEFT
+    test eax, 8000h
+    jz chk_right
+    mov eax, playerX
+    sub eax, playerSpeed
+    cmp eax, 0
+    jl l_bound
+    mov playerX, eax
+    jmp chk_right
+l_bound:
+    mov playerX, 0
 
-        .IF ebx == 1            ; If a wall was hit...
-            add [esi].Enemy.posy, 20  ; Move everyone DOWN
-        .ELSE                   ; Otherwise...
-            mov eax, enemySpeed
-            imul eax, enemyDir
-            add [esi].Enemy.posx, eax
-        .ENDIF
+chk_right:
+    invoke GetAsyncKeyState, VK_RIGHT
+    test eax, 8000h
+    jz chk_up
+    mov eax, playerX
+    add eax, playerSpeed
+    mov ebx, SCREEN_WIDTH
+    sub ebx, PLAYER_WIDTH
+    cmp eax, ebx
+    jg r_bound
+    mov playerX, eax
+    jmp chk_up
+r_bound:
+    mov playerX, ebx
 
-    NEXT_MOVE:
-        add esi, TYPE Enemy
-        loop L_APPLY_MOVE
+chk_up:
+    invoke GetAsyncKeyState, VK_UP
+    test eax, 8000h
+    jz chk_down
+    mov eax, playerY
+    sub eax, playerSpeed
+    cmp eax, 250       
+    jl t_bound
+    mov playerY, eax
+    jmp chk_down
+t_bound:
+    mov playerY, 250
 
-        .IF ebx == 1
-            neg enemyDir        ; Flip 1 to -1, or -1 to 1
-        .ENDIF
+chk_down:
+    invoke GetAsyncKeyState, VK_DOWN
+    test eax, 8000h
+    jz chk_shoot
+    mov eax, playerY
+    add eax, playerSpeed
+    mov ebx, SCREEN_HEIGHT
+    sub ebx, PLAYER_HEIGHT
+    cmp eax, ebx
+    jg b_bound
+    mov playerY, eax
+    jmp chk_shoot
+b_bound:
+    mov playerY, ebx
 
-        popad
-        ret
-    UpdateEnemyMovement ENDP
-
-
-
+chk_shoot:
+    invoke GetAsyncKeyState, VK_SPACE
+    test eax, 8000h
+    jz fin_in
+    cmp shootCooldown, 0
+    jg fin_in
     
+    mov ecx, MAX_BULLETS
+    mov esi, OFFSET bulletArr
+  sb_loop:
+    cmp [esi].Bullet.isActive, 0
+    je do_sb
+    add esi, TYPE Bullet
+    dec ecx
+    jnz sb_loop
+    jmp set_cd
+  do_sb:
+    mov [esi].Bullet.isActive, 1
+    mov eax, playerX
+    add eax, 18
+    mov [esi].Bullet.posx, eax
+    mov eax, playerY
+    mov [esi].Bullet.posy, eax
+    mov [esi].Bullet.vx, 0
+    mov [esi].Bullet.vy, -12 
+    
+    .IF weaponLevel >= 2
+      mov esi, OFFSET bulletArr
+      mov ecx, MAX_BULLETS
+    sb_l2:
+      cmp [esi].Bullet.isActive, 0
+      je do_sb2
+      add esi, TYPE Bullet
+      dec ecx
+      jnz sb_l2
+      jmp set_cd
+    do_sb2:
+      mov [esi].Bullet.isActive, 1
+      mov eax, playerX
+      add eax, 8
+      mov [esi].Bullet.posx, eax
+      mov eax, playerY
+      mov [esi].Bullet.posy, eax
+      mov [esi].Bullet.vx, 0
+      mov [esi].Bullet.vy, -12
 
-    InitWave PROC
-        pushad
+      .IF weaponLevel >= 3
+        mov esi, OFFSET bulletArr
+        mov ecx, MAX_BULLETS
+      sb_l3:
+        cmp [esi].Bullet.isActive, 0
+        je do_sb3
+        add esi, TYPE Bullet
+        dec ecx
+        jnz sb_l3
+        jmp set_cd
+      do_sb3:
+        mov [esi].Bullet.isActive, 1
+        mov eax, playerX
+        add eax, 28
+        mov [esi].Bullet.posx, eax
+        mov eax, playerY
+        mov [esi].Bullet.posy, eax
+        mov [esi].Bullet.vx, 0
+        mov [esi].Bullet.vy, -12
+      .ENDIF
+    .ENDIF
 
-        mov esi, OFFSET enemyArr
-        mov ecx, ROWS
-        mov ebx, START_Y
+set_cd:
+    .IF weaponLevel == 1
+        mov shootCooldown, 10
+    .ELSEIF weaponLevel == 2
+        mov shootCooldown, 7
+    .ELSE
+        mov shootCooldown, 4
+    .ENDIF
 
-    L_ROWS:
-        push ecx 
-        mov ecx, COLS  
-        mov edx, START_X    
+fin_in:
+    cmp shootCooldown, 0
+    je upd_done
+    dec shootCooldown
+upd_done:
+    ret
+UpdatePlayer ENDP
 
-        L_COLS:
-            ; Set the enemy to active
-            mov [esi].Enemy.isActive, 1
+; --- Movement Subroutines ---
+UpdateBullets PROC USES esi ecx
+    mov esi, OFFSET bulletArr
+    mov ecx, MAX_BULLETS
+ub_p:
+    cmp [esi].Bullet.isActive, 0
+    je nxt_bp
+    mov eax, [esi].Bullet.vy
+    add [esi].Bullet.posy, eax
+    cmp [esi].Bullet.posy, 0
+    jl kill_bp
+    jmp nxt_bp
+kill_bp:
+    mov [esi].Bullet.isActive, 0
+nxt_bp:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz ub_p
 
+    mov esi, OFFSET enemyBulletArr
+    mov ecx, MAX_ENEMY_BULLETS
+ub_e:
+    cmp [esi].Bullet.isActive, 0
+    je nxt_be
+    mov eax, [esi].Bullet.vx
+    add [esi].Bullet.posx, eax
+    mov eax, [esi].Bullet.vy
+    add [esi].Bullet.posy, eax
+    
+    cmp [esi].Bullet.posy, SCREEN_HEIGHT
+    jg kill_be
+    cmp [esi].Bullet.posy, -20
+    jl kill_be
+    cmp [esi].Bullet.posx, -20
+    jl kill_be
+    cmp [esi].Bullet.posx, SCREEN_WIDTH
+    jg kill_be
+    
+    jmp nxt_be
+kill_be:
+    mov [esi].Bullet.isActive, 0
+nxt_be:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz ub_e
+    ret
+UpdateBullets ENDP
 
-            ;       Procedural Stat Assignment
-            ;  - look at stack to get row num
-            ;  - assign stats based on row num
-            mov eax, [esp]          
+UpdateEnemies PROC USES esi ecx ebx edi
+    LOCAL alive:DWORD
+    mov alive, 0
+    mov edx, 0 
+    mov esi, OFFSET enemyArr
+    mov ecx, MAX_ENEMIES
+
+mv_e:
+    cmp [esi].Enemy.isActive, 0
+    je skp_e
+    inc alive
+
+    .IF currentWave < 4
+        invoke RandomRange, 400
+        cmp eax, 0
+        jne no_sh
+        mov eax, [esi].Enemy.posx
+        add eax, 11
+        mov ebx, [esi].Enemy.posy
+        add ebx, 20
+        invoke SpawnEnemyBullet, eax, ebx, 0, 10  
+    no_sh:
+    .ENDIF
+
+    .IF currentWave == 1 || currentWave == 3
+        mov eax, enemySpeed
+        imul eax, enemyDir
+        add [esi].Enemy.posx, eax
+    .ELSEIF currentWave == 2
+        mov eax, enemySpeed
+        imul eax, enemyDir
+        add [esi].Enemy.posx, eax
+        mov eax, frameCount
+        and eax, 32
+        .IF eax == 0
+            add [esi].Enemy.posy, 1
+        .ELSE
+            sub [esi].Enemy.posy, 1
+        .ENDIF
+    .ENDIF
+
+    mov eax, [esi].Enemy.posx
+    add eax, ENEMY_WIDTH
+    cmp eax, SCREEN_WIDTH
+    jl c_lf
+    mov edx, 1
+    jmp skp_e
+c_lf:
+    cmp [esi].Enemy.posx, 0
+    jg skp_e
+    mov edx, 1
+
+skp_e:
+    add esi, TYPE Enemy
+    dec ecx
+    jnz mv_e
+
+    .IF currentWave != 4
+        cmp alive, 0
+        jne c_edg
+        
+        push esi
+        push ecx
+        mov esi, OFFSET bulletArr
+        mov ecx, MAX_BULLETS
+    cw_b: mov [esi].Bullet.isActive, 0
+          add esi, TYPE Bullet
+          dec ecx
+          jnz cw_b
+          
+        mov esi, OFFSET enemyBulletArr
+        mov ecx, MAX_ENEMY_BULLETS
+    cw_eb: mov [esi].Bullet.isActive, 0
+           add esi, TYPE Bullet
+           dec ecx
+           jnz cw_eb
+        pop ecx
+        pop esi
+        
+        inc currentWave
+        call InitWave
+        jmp e_done
+        
+    c_edg:
+        cmp edx, 1
+        jne e_done
+        neg enemyDir
+    .ENDIF
+e_done:
+    ret
+UpdateEnemies ENDP
+
+; --- BOSS LOGIC ---
+UpdateBoss PROC USES esi ecx ebx edi
+    cmp bossActive, 0
+    je end_b
+
+    inc bossTimer
+
+    .IF bossState == 6
+        invoke RandomRange, 400
+        add eax, 200
+        mov ebx, eax
+        invoke RandomRange, 150
+        add eax, 20
+        invoke SpawnExplosion, ebx, eax
+        
+        .IF bossTimer > 180
+            mov gameState, STATE_WIN
+        .ENDIF
+        ret
+    .ENDIF
+
+    mov eax, frameCount
+    and eax, 63     
+    cmp eax, 0
+    jne skp_mn
+    invoke RandomRange, 700
+    add eax, 50
+    invoke SpawnEnemyBullet, eax, 140, 0, 9 
+ skp_mn:
+
+    .IF bossState == 0
+        .IF bossTimer > 40
+            invoke RandomRange, 5 
+            inc eax               
+            mov bossState, eax
+            mov bossTimer, 0
             
-            .IF eax == 3            ; Top Row
-                mov [esi].Enemy.enemyType, 2
-                mov eax, HEALTH_TOP
-                mov [esi].Enemy.health, eax
-            .ELSEIF eax == 2        ; Middle Row
-                mov [esi].Enemy.enemyType, 1
-                mov eax, HEALTH_MID
-                mov [esi].Enemy.health, eax
-            .ELSE                   ; Bottom Row
-                mov [esi].Enemy.enemyType, 0
-                mov eax, HEALTH_BOT
-                mov [esi].Enemy.health, eax
+            invoke RandomRange, 3     
+            cmp eax, 0
+            jne skip_shield
+            mov bossShieldHP, 25
+          skip_shield:
+
+            .IF eax == 1
+                mov bossLaserX, 400
+            .ELSEIF eax == 3
+                ; RED ATTACK SETUP: Safe X and Y boundaries
+                invoke RandomRange, 650
+                mov bossSafeX, eax
+                invoke RandomRange, 250
+                add eax, 250
+                mov bossSafeY, eax
+            .ELSEIF eax == 5
+                ; PELLET SETUP: Constrained strictly on screen
+                mov pelletX, 400
+                mov pelletY, 150
+                invoke RandomRange, 700
+                add eax, 50
+                mov targetPelletX, eax
+                invoke RandomRange, 250
+                add eax, 250
+                mov targetPelletY, eax
+                mov pelletActive, 1
+                mov pelletBurstCount, 0
+            .ENDIF
+        .ENDIF
+
+    .ELSEIF bossState == 1
+        .IF bossTimer > 40 && bossTimer < 140
+            mov eax, bossLaserDir
+            imul eax, 12  
+            add bossLaserX, eax
+            .IF bossLaserX > 550
+                mov bossLaserDir, -1
+            .ELSEIF bossLaserX < 200
+                mov bossLaserDir, 1
             .ENDIF
             
-            ; Set the position
-            mov eax, edx
-            mov [esi].Enemy.posx, eax
-            mov eax, ebx
-            mov [esi].Enemy.posy, eax
+            mov eax, playerX
+            add eax, PLAYER_WIDTH
+            cmp eax, bossLaserX
+            jl s1_sf
+            mov eax, bossLaserX
+            add eax, 60 
+            cmp playerX, eax
+            jg s1_sf
+            dec playerHealth
+            invoke SpawnExplosion, playerX, playerY
+            .IF playerHealth <= 0
+                mov gameState, STATE_DEAD
+            .ENDIF
+          s1_sf:
+        .ELSEIF bossTimer >= 140
+            mov bossState, 0
+            mov bossTimer, 0
+        .ENDIF
+
+    .ELSEIF bossState == 2
+        mov eax, bossTimer
+        .IF eax == 20 || eax == 40 || eax == 60 || eax == 80
+            mov ebx, 0 
+          bw_lp:
+            cmp ebx, 800
+            jge end_bw
             
-            add esi, TYPE Enemy
-            add edx, SPACING_X
+            mov edi, playerX
+            sub edi, 25
+            cmp ebx, edi
+            jl fire_bw
+            mov edi, playerX
+            add edi, 65
+            cmp ebx, edi
+            jg fire_bw
+            jmp nxt_bw
             
-        loop L_COLS 
+          fire_bw:
+            invoke SpawnEnemyBullet, ebx, 150, 0, 10
+          nxt_bw:
+            add ebx, 40
+            jmp bw_lp
+          end_bw:
+        .ELSEIF bossTimer >= 100
+            mov bossState, 0
+            mov bossTimer, 0
+        .ENDIF
 
-        add ebx, SPACING_Y
-        pop ecx 
+    .ELSEIF bossState == 3
+        ; RED ATTACK LOGIC (Safe Square X and Y)
+        .IF bossTimer > 80 && bossTimer < 120
+            mov eax, playerX
+            mov ebx, bossSafeX
+            .IF eax < ebx
+                jmp kill_p3
+            .ENDIF
+            add eax, PLAYER_WIDTH
+            add ebx, 150
+            .IF eax > ebx
+                jmp kill_p3
+            .ENDIF
+            
+            mov eax, playerY
+            mov ebx, bossSafeY
+            .IF eax < ebx
+                jmp kill_p3
+            .ENDIF
+            add eax, PLAYER_HEIGHT
+            add ebx, 150
+            .IF eax > ebx
+                jmp kill_p3
+            .ENDIF
+            
+            jmp safe_p3
+            
+        kill_p3:
+            mov playerHealth, 0
+            mov gameState, STATE_DEAD
+            invoke SpawnExplosion, playerX, playerY
+        safe_p3:
+        .ELSEIF bossTimer >= 140
+            mov bossState, 0
+            mov bossTimer, 0
+        .ENDIF
 
-    loop L_ROWS
+    .ELSEIF bossState == 4
+        mov eax, bossTimer
+        .IF eax == 10 || eax == 25 || eax == 40 || eax == 55 || eax == 70
+            mov esi, OFFSET bossBeamArr
+            mov ecx, MAX_BOSS_BEAMS
+          f_bb:
+            cmp [esi].BossBeam.isActive, 0
+            je do_bb
+            add esi, TYPE BossBeam
+            dec ecx
+            jnz f_bb
+            jmp skp_bb
+          do_bb:
+            mov [esi].BossBeam.isActive, 1
+            mov [esi].BossBeam.timer, 0
+            mov edi, playerX
+            mov [esi].BossBeam.posx, edi
+          skp_bb:
+        .ENDIF
 
-        popad
+        mov esi, OFFSET bossBeamArr
+        mov ecx, MAX_BOSS_BEAMS
+      u_bb_lp:
+        cmp [esi].BossBeam.isActive, 0
+        je u_bb_nx
+        inc [esi].BossBeam.timer
+        mov eax, [esi].BossBeam.timer
+        .IF eax >= 20 && eax <= 30
+            mov edi, playerX
+            add edi, PLAYER_WIDTH
+            cmp edi, [esi].BossBeam.posx
+            jl sf_bb
+            mov edi, [esi].BossBeam.posx
+            add edi, 40
+            cmp playerX, edi
+            jg sf_bb
+            
+            dec playerHealth
+            invoke SpawnExplosion, playerX, playerY
+            .IF playerHealth <= 0
+                mov gameState, STATE_DEAD
+            .ENDIF
+          sf_bb:
+        .ELSEIF eax > 30
+            mov [esi].BossBeam.isActive, 0
+        .ENDIF
+      u_bb_nx:
+        add esi, TYPE BossBeam
+        dec ecx
+        jnz u_bb_lp
+
+        .IF bossTimer >= 110
+            mov bossState, 0
+            mov bossTimer, 0
+        .ENDIF
+
+    .ELSEIF bossState == 5
+        .IF pelletActive == 1
+            mov eax, pelletX
+            mov ebx, targetPelletX
+            .IF eax < ebx
+                add eax, 10
+                .IF eax > ebx
+                    mov eax, ebx
+                .ENDIF
+                mov pelletX, eax
+            .ELSEIF eax > ebx
+                sub eax, 10
+                .IF eax < ebx
+                    mov eax, ebx
+                .ENDIF
+                mov pelletX, eax
+            .ENDIF
+            
+            mov eax, pelletY
+            mov ebx, targetPelletY
+            .IF eax < ebx
+                add eax, 10
+                .IF eax > ebx
+                    mov eax, ebx
+                .ENDIF
+                mov pelletY, eax
+            .ELSEIF eax > ebx
+                sub eax, 10
+                .IF eax < ebx
+                    mov eax, ebx
+                .ENDIF
+                mov pelletY, eax
+            .ENDIF
+            
+            mov eax, pelletX
+            .IF eax == targetPelletX
+                mov eax, pelletY
+                .IF eax == targetPelletY
+                    mov pelletActive, 0
+                    invoke SpawnExplosion, pelletX, pelletY
+                .ENDIF
+            .ENDIF
+        .ELSE
+            mov eax, bossTimer
+            and eax, 7 
+            .IF eax == 0
+                mov eax, pelletBurstCount
+                .IF eax < 5
+                    inc pelletBurstCount
+                    invoke SpawnEnemyBullet, pelletX, pelletY, 0, -8
+                    invoke SpawnEnemyBullet, pelletX, pelletY, 0, 8
+                    invoke SpawnEnemyBullet, pelletX, pelletY, -8, 0
+                    invoke SpawnEnemyBullet, pelletX, pelletY, 8, 0
+                    invoke SpawnEnemyBullet, pelletX, pelletY, -6, -6
+                    invoke SpawnEnemyBullet, pelletX, pelletY, 6, -6
+                    invoke SpawnEnemyBullet, pelletX, pelletY, -6, 6
+                    invoke SpawnEnemyBullet, pelletX, pelletY, 6, 6
+                .ENDIF
+            .ENDIF
+        .ENDIF
+        
+        .IF bossTimer >= 180
+            mov bossState, 0
+            mov bossTimer, 0
+        .ENDIF
+    .ENDIF
+
+end_b:
+    ret
+UpdateBoss ENDP
+
+; --- Collisions ---
+CheckCollisions PROC USES esi edi ebx
+    mov esi, OFFSET bulletArr
+    mov ecx, MAX_BULLETS
+cb_lp:
+    cmp [esi].Bullet.isActive, 0
+    je nx_pb
+
+    .IF bossActive == 1 && bossState != 6
+        .IF [esi].Bullet.posy < 165
+            .IF [esi].Bullet.posx > 140 && [esi].Bullet.posx < 660
+                .IF bossShieldHP > 0
+                    dec bossShieldHP
+                    mov [esi].Bullet.isActive, 0
+                    invoke SpawnEnemyBullet, [esi].Bullet.posx, [esi].Bullet.posy, 0, 15 
+                    invoke SpawnExplosion, [esi].Bullet.posx, [esi].Bullet.posy
+                    jmp nx_pb
+                .ELSE
+                    mov [esi].Bullet.isActive, 0
+                    dec bossHP
+                    invoke SpawnExplosion, [esi].Bullet.posx, [esi].Bullet.posy
+                    .IF bossHP <= 0
+                        mov bossState, 6 
+                        mov bossTimer, 0
+                        push esi
+                        push ecx
+                        mov esi, OFFSET bossBeamArr
+                        mov ecx, MAX_BOSS_BEAMS
+                      clr_bb2: 
+                        mov [esi].BossBeam.isActive, 0
+                        add esi, TYPE BossBeam
+                        dec ecx
+                        jnz clr_bb2
+                        pop ecx
+                        pop esi
+                    .ENDIF
+                    jmp nx_pb
+                .ENDIF
+            .ENDIF
+        .ENDIF
+    .ENDIF
+
+    push ecx
+    mov edi, OFFSET enemyArr
+    mov ecx, MAX_ENEMIES
+ce_lp:
+    cmp [edi].Enemy.isActive, 0
+    je nx_pe
+    mov eax, [esi].Bullet.posx
+    add eax, BULLET_WIDTH
+    cmp eax, [edi].Enemy.posx
+    jl nx_pe
+    mov eax, [esi].Bullet.posx
+    mov ebx, [edi].Enemy.posx
+    add ebx, ENEMY_WIDTH
+    cmp eax, ebx
+    jg nx_pe
+    mov eax, [esi].Bullet.posy
+    add eax, BULLET_HEIGHT
+    cmp eax, [edi].Enemy.posy
+    jl nx_pe
+    mov eax, [esi].Bullet.posy
+    mov ebx, [edi].Enemy.posy
+    add ebx, ENEMY_HEIGHT
+    cmp eax, ebx
+    jg nx_pe
+
+    mov [esi].Bullet.isActive, 0
+    dec [edi].Enemy.health
+    cmp [edi].Enemy.health, 0
+    jg dn_e 
+
+    mov [edi].Enemy.isActive, 0
+    invoke SpawnExplosion, [edi].Enemy.posx, [edi].Enemy.posy
+    
+    invoke RandomRange, 50
+    cmp eax, 0
+    jne dn_e
+    invoke SpawnPowerUp, [edi].Enemy.posx, [edi].Enemy.posy
+    jmp dn_e 
+nx_pe:
+    add edi, TYPE Enemy
+    dec ecx
+    jnz ce_lp
+dn_e:
+    pop ecx
+
+nx_pb:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz cb_lp
+
+    mov edi, OFFSET enemyArr
+    mov ecx, MAX_ENEMIES
+p_vs_e:
+    cmp [edi].Enemy.isActive, 0
+    je nx_p_e
+    
+    mov eax, playerX
+    add eax, PLAYER_WIDTH
+    cmp eax, [edi].Enemy.posx
+    jl nx_p_e
+    mov eax, playerX
+    mov ebx, [edi].Enemy.posx
+    add ebx, ENEMY_WIDTH
+    cmp eax, ebx
+    jg nx_p_e
+    mov eax, playerY
+    add eax, PLAYER_HEIGHT
+    cmp eax, [edi].Enemy.posy
+    jl nx_p_e
+    mov eax, playerY
+    mov ebx, [edi].Enemy.posy
+    add ebx, ENEMY_HEIGHT
+    cmp eax, ebx
+    jg nx_p_e
+    
+    mov playerHealth, 0
+    mov gameState, STATE_DEAD
+    invoke SpawnExplosion, playerX, playerY
+    jmp e_p_vs_e 
+nx_p_e:
+    add edi, TYPE Enemy
+    dec ecx
+    jnz p_vs_e
+e_p_vs_e:
+
+    mov esi, OFFSET enemyBulletArr
+    mov ecx, MAX_ENEMY_BULLETS
+eb_lp:
+    cmp [esi].Bullet.isActive, 0
+    je nx_eb
+    mov eax, [esi].Bullet.posx
+    add eax, ENEMY_BULLET_W
+    cmp eax, playerX
+    jl nx_eb
+    mov eax, [esi].Bullet.posx
+    mov ebx, playerX
+    add ebx, PLAYER_WIDTH
+    cmp eax, ebx
+    jg nx_eb
+    mov eax, [esi].Bullet.posy
+    add eax, ENEMY_BULLET_H
+    cmp eax, playerY
+    jl nx_eb
+    mov eax, [esi].Bullet.posy
+    mov ebx, playerY
+    add ebx, PLAYER_HEIGHT
+    cmp eax, ebx
+    jg nx_eb
+
+    mov [esi].Bullet.isActive, 0
+    invoke SpawnExplosion, playerX, playerY
+    dec playerHealth
+    .IF playerHealth <= 0
+        mov gameState, STATE_DEAD
+    .ENDIF
+nx_eb:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz eb_lp
+    ret
+CheckCollisions ENDP
+
+; --- Main Loop Routine ---
+UpdateGame PROC
+    inc frameCount
+    
+    mov esi, OFFSET starArr
+    mov ecx, MAX_STARS
+us_lp:
+    mov eax, [esi].Star.speed
+    add [esi].Star.posy, eax
+    cmp [esi].Star.posy, SCREEN_HEIGHT
+    jl us_skp
+    mov [esi].Star.posy, 0
+    push ecx
+    invoke RandomRange, SCREEN_WIDTH
+    pop ecx
+    mov [esi].Star.posx, eax
+us_skp:
+    add esi, TYPE Star
+    dec ecx
+    jnz us_lp
+
+    mov esi, OFFSET explosionArr
+    mov ecx, MAX_EXPLOSIONS
+ue_lp:
+    cmp [esi].Explosion.isActive, 0
+    je ue_skp
+    dec [esi].Explosion.timer
+    cmp [esi].Explosion.timer, 0
+    jg ue_skp
+    mov [esi].Explosion.isActive, 0
+ue_skp:
+    add esi, TYPE Explosion
+    dec ecx
+    jnz ue_lp
+
+    mov esi, OFFSET powerupArr
+    mov ecx, MAX_POWERUPS
+up_lp:
+    cmp [esi].PowerUp.isActive, 0
+    je up_nxt
+    add [esi].PowerUp.posy, POWERUP_SPEED
+    cmp [esi].PowerUp.posy, SCREEN_HEIGHT
+    jg k_pu
+    cmp gameState, STATE_PLAY
+    jne up_nxt
+    
+    mov eax, [esi].PowerUp.posx
+    add eax, POWERUP_SIZE
+    cmp eax, playerX
+    jl up_nxt
+    mov eax, [esi].PowerUp.posx
+    mov ebx, playerX
+    add ebx, PLAYER_WIDTH
+    cmp eax, ebx
+    jg up_nxt
+    mov eax, [esi].PowerUp.posy
+    add eax, POWERUP_SIZE
+    cmp eax, playerY
+    jl up_nxt
+    mov eax, [esi].PowerUp.posy
+    mov ebx, playerY
+    add ebx, PLAYER_HEIGHT
+    cmp eax, ebx
+    jg up_nxt
+    
+    mov [esi].PowerUp.isActive, 0
+    cmp weaponLevel, 3
+    jge up_nxt
+    inc weaponLevel
+    jmp up_nxt
+k_pu: mov [esi].PowerUp.isActive, 0
+up_nxt:
+    add esi, TYPE PowerUp
+    dec ecx
+    jnz up_lp
+
+    cmp gameState, STATE_PLAY
+    jne g_end
+    
+    call UpdatePlayer
+    call UpdateBullets
+    call UpdateEnemies
+    call UpdateBoss
+    call CheckCollisions
+
+g_end:
+    ret
+UpdateGame ENDP
+
+; --- Rendering Base ---
+RenderGame PROC USES esi hdc:DWORD
+    LOCAL animT:DWORD
+    LOCAL rcT:RECT     
+
+    mov eax, frameCount
+    shr eax, 4 
+    and eax, 1
+    mov animT, eax
+
+    mov esi, OFFSET starArr
+    mov ecx, MAX_STARS
+rs_lp:
+    push ecx
+    invoke DrawRect, hdc, [esi].Star.posx, [esi].Star.posy, [esi].Star.starSize, [esi].Star.starSize, [esi].Star.color
+    pop ecx
+    add esi, TYPE Star
+    dec ecx
+    jnz rs_lp
+
+    .IF gameState != STATE_DEAD
+        mov eax, playerY
+        add eax, 10
+        invoke DrawRect, hdc, playerX, eax, 40, 10, COLOR_BLUE
+        mov eax, playerX
+        add eax, 15
+        invoke DrawRect, hdc, eax, playerY, 10, 10, COLOR_BLUE
+        
+        mov ebx, 10
+        mov ecx, playerHealth
+        cmp ecx, 0
+        jle r_h_d
+    rh_lp:
+        push ecx
+        invoke DrawRect, hdc, ebx, 10, 15, 10, COLOR_BLUE
+        add ebx, 20
+        pop ecx
+        dec ecx
+        jnz rh_lp
+    r_h_d:
+    .ENDIF
+
+    mov esi, OFFSET bulletArr
+    mov ecx, MAX_BULLETS
+rb_lp:
+    cmp [esi].Bullet.isActive, 0
+    je rb_nx
+    push ecx
+    invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, BULLET_WIDTH, BULLET_HEIGHT, COLOR_YELLOW
+    pop ecx
+rb_nx:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz rb_lp
+
+    mov esi, OFFSET enemyBulletArr
+    mov ecx, MAX_ENEMY_BULLETS
+reb_lp:
+    cmp [esi].Bullet.isActive, 0
+    je reb_nx
+    push ecx
+    invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, ENEMY_BULLET_W, ENEMY_BULLET_H, COLOR_MAGENTA
+    pop ecx
+reb_nx:
+    add esi, TYPE Bullet
+    dec ecx
+    jnz reb_lp
+
+    mov esi, OFFSET powerupArr
+    mov ecx, MAX_POWERUPS
+rpu_lp:
+    cmp [esi].PowerUp.isActive, 0
+    je rpu_nx
+    push ecx
+    invoke DrawRect, hdc, [esi].PowerUp.posx, [esi].PowerUp.posy, POWERUP_SIZE, POWERUP_SIZE, COLOR_CYAN
+    pop ecx
+rpu_nx:
+    add esi, TYPE PowerUp
+    dec ecx
+    jnz rpu_lp
+
+    mov esi, OFFSET enemyArr
+    mov ecx, MAX_ENEMIES
+re_lp:
+    cmp [esi].Enemy.isActive, 0
+    je re_nx
+    push ecx
+    .IF [esi].Enemy.health > 6
+        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_MAGENTA
+    .ELSEIF [esi].Enemy.health > 4
+        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_RED
+    .ELSEIF [esi].Enemy.health > 2
+        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_ORANGE
+    .ELSE
+        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_GREEN
+    .ENDIF
+    pop ecx
+re_nx:
+    add esi, TYPE Enemy
+    dec ecx
+    jnz re_lp
+
+    .IF bossActive == 1 && bossState != 6
+        cmp bossHP, 0
+        jle skp_bar
+        invoke DrawRect, hdc, 0, 0, bossHP, 8, COLOR_RED
+      skp_bar:
+
+        mov edx, COLOR_DARKGRAY
+        mov ebx, COLOR_DARKGRAY
+        .IF bossState == 1
+            mov ebx, COLOR_ORANGE  
+        .ELSEIF bossState == 2
+            mov edx, COLOR_MAGENTA 
+        .ELSEIF bossState == 3
+            mov ebx, COLOR_DARKRED
+            mov edx, COLOR_DARKRED
+        .ELSEIF bossState == 4
+            mov ebx, COLOR_CYAN
+            mov edx, COLOR_CYAN
+        .ELSEIF bossState == 5
+            mov ebx, COLOR_YELLOW
+            mov edx, COLOR_YELLOW
+        .ENDIF
+
+        invoke DrawRect, hdc, 200, 20, 400, 80, edx
+        invoke DrawRect, hdc, 150, 40, 50, 110, ebx
+        invoke DrawRect, hdc, 600, 40, 50, 110, ebx
+        
+        mov eax, COLOR_BLUE
+        .IF bossState == 1
+            mov eax, COLOR_ORANGE
+        .ELSEIF bossState == 2
+            mov eax, COLOR_MAGENTA
+        .ELSEIF bossState == 3
+            mov eax, COLOR_RED
+        .ELSEIF bossState == 4
+            mov eax, COLOR_CYAN
+        .ELSEIF bossState == 5
+            mov eax, COLOR_YELLOW
+        .ENDIF
+
+        .IF animT == 0
+            invoke DrawRect, hdc, 360, 60, 80, 40, eax
+        .ELSE
+            invoke DrawRect, hdc, 360, 60, 80, 40, COLOR_WHITE
+        .ENDIF
+
+        .IF bossShieldHP > 0
+            mov eax, bossShieldHP
+            shl eax, 4          
+            mov ebx, eax
+            shr ebx, 1
+            mov ecx, 400
+            sub ecx, ebx        
+            
+            push ecx
+            push eax
+            invoke DrawRect, hdc, ecx, 155, eax, 8, COLOR_CYAN
+            pop eax
+            pop ecx
+            
+            add ecx, 5
+            .IF eax > 10
+                sub eax, 10
+                invoke DrawRect, hdc, ecx, 157, eax, 4, COLOR_WHITE
+            .ENDIF
+        .ENDIF
+
+        .IF bossState == 1
+            .IF bossTimer <= 40
+                invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_DARKRED
+            .ELSE
+                invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_RED
+                mov eax, bossLaserX
+                add eax, 15
+                invoke DrawRect, hdc, eax, 100, 30, 600, COLOR_YELLOW
+            .ENDIF
+        .ELSEIF bossState == 3
+            ; RED WIPE VISUALS (SAFE SQUARE FIX)
+            .IF bossTimer <= 80
+                ; Warning pulse: 4 Rectangles around safe zone in DARKRED
+                mov eax, bossSafeY
+                sub eax, 150
+                invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_DARKRED
+                
+                mov eax, bossSafeY
+                add eax, 150
+                mov ebx, 600
+                sub ebx, eax
+                invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_DARKRED
+                
+                invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_DARKRED
+                
+                mov eax, bossSafeX
+                add eax, 150
+                mov ebx, 800
+                sub ebx, eax
+                invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_DARKRED
+            .ELSE
+                ; Blast Phase: 4 Rectangles in RED with WHITE cores
+                mov eax, bossSafeY
+                sub eax, 150
+                invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_RED
+                .IF eax > 20
+                    sub eax, 20
+                    invoke DrawRect, hdc, 10, 160, 780, eax, COLOR_WHITE
+                .ENDIF
+                
+                mov eax, bossSafeY
+                add eax, 150
+                mov ebx, 600
+                sub ebx, eax
+                push eax
+                push ebx
+                invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_RED
+                pop ebx
+                pop eax
+                .IF ebx > 20
+                    sub ebx, 20
+                    mov ecx, eax
+                    add ecx, 10
+                    invoke DrawRect, hdc, 10, ecx, 780, ebx, COLOR_WHITE
+                .ENDIF
+                
+                invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_RED
+                mov eax, bossSafeX
+                .IF eax > 20
+                    sub eax, 20
+                    mov ebx, bossSafeY
+                    add ebx, 10
+                    invoke DrawRect, hdc, 10, ebx, eax, 130, COLOR_WHITE
+                .ENDIF
+                
+                mov eax, bossSafeX
+                add eax, 150
+                mov ebx, 800
+                sub ebx, eax
+                push eax
+                push ebx
+                invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_RED
+                pop ebx
+                pop eax
+                .IF ebx > 20
+                    mov ecx, eax
+                    add ecx, 10
+                    sub ebx, 20
+                    mov edx, bossSafeY
+                    add edx, 10
+                    invoke DrawRect, hdc, ecx, edx, ebx, 130, COLOR_WHITE
+                .ENDIF
+            .ENDIF
+        .ELSEIF bossState == 5
+            .IF pelletActive == 1
+                .IF animT == 0
+                    invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_MAGENTA
+                .ELSE
+                    invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_WHITE
+                .ENDIF
+            .ENDIF
+        .ENDIF
+        
+        mov esi, OFFSET bossBeamArr
+        mov ecx, MAX_BOSS_BEAMS
+      r_bb_lp:
+        cmp [esi].BossBeam.isActive, 0
+        je r_bb_nx
+        push ecx
+        mov eax, [esi].BossBeam.timer
+        .IF eax < 20
+            mov ebx, [esi].BossBeam.posx
+            add ebx, 18
+            invoke DrawRect, hdc, ebx, 100, 4, 600, COLOR_CYAN
+        .ELSEIF eax <= 30
+            mov ebx, [esi].BossBeam.posx
+            invoke DrawRect, hdc, ebx, 100, 40, 600, COLOR_WHITE
+            add ebx, 10
+            invoke DrawRect, hdc, ebx, 100, 20, 600, COLOR_CYAN
+        .ENDIF
+        pop ecx
+      r_bb_nx:
+        add esi, TYPE BossBeam
+        dec ecx
+        jnz r_bb_lp
+    .ENDIF
+
+    mov esi, OFFSET explosionArr
+    mov ecx, MAX_EXPLOSIONS
+rx_lp:
+    cmp [esi].Explosion.isActive, 0
+    je rx_nx
+    push ecx
+    .IF [esi].Explosion.timer > 10
+        mov eax, [esi].Explosion.posx
+        sub eax, 5
+        mov ebx, [esi].Explosion.posy
+        sub ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 30, 30, COLOR_YELLOW
+    .ELSEIF [esi].Explosion.timer > 5
+        invoke DrawRect, hdc, [esi].Explosion.posx, [esi].Explosion.posy, 20, 20, COLOR_ORANGE
+    .ELSE
+        mov eax, [esi].Explosion.posx
+        add eax, 5
+        mov ebx, [esi].Explosion.posy
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 10, 10, COLOR_RED
+    .ENDIF
+    pop ecx
+rx_nx:
+    add esi, TYPE Explosion
+    dec ecx
+    jnz rx_lp
+
+    .IF gameState != STATE_PLAY
+        invoke SetBkMode, hdc, TRANSPARENT
+        mov rcT.left, 0
+        mov rcT.right, SCREEN_WIDTH
+        mov rcT.top, 250
+        mov rcT.bottom, 300
+        .IF gameState == STATE_DEAD
+            invoke SetTextColor, hdc, COLOR_RED
+            invoke DrawTextA, hdc, ADDR szGameOver, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        .ELSE
+            invoke SetTextColor, hdc, COLOR_GREEN
+            invoke DrawTextA, hdc, ADDR szWin, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        .ENDIF
+        invoke SetTextColor, hdc, COLOR_WHITE
+        mov rcT.top, 290
+        mov rcT.bottom, 340
+        invoke DrawTextA, hdc, ADDR szRestart, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+    .ENDIF
+    ret
+RenderGame ENDP
+
+; --- Core Win32 ---
+RestartGame PROC USES esi ecx
+    mov playerHealth, 3
+    mov weaponLevel, 1
+    mov playerX, 380
+    mov playerY, 530
+    mov gameState, STATE_PLAY
+    mov shootCooldown, 0
+    mov currentWave, 1
+    mov bossActive, 0
+    
+    mov esi, OFFSET bulletArr
+    mov ecx, MAX_BULLETS
+clr_b: mov [esi].Bullet.isActive, 0
+       add esi, TYPE Bullet
+       dec ecx
+       jnz clr_b
+
+    mov esi, OFFSET enemyBulletArr
+    mov ecx, MAX_ENEMY_BULLETS
+clr_eb: mov [esi].Bullet.isActive, 0
+        add esi, TYPE Bullet
+        dec ecx
+        jnz clr_eb
+
+    mov esi, OFFSET explosionArr
+    mov ecx, MAX_EXPLOSIONS
+clr_x: mov [esi].Explosion.isActive, 0
+       add esi, TYPE Explosion
+       dec ecx
+       jnz clr_x
+
+    mov esi, OFFSET bossBeamArr
+    mov ecx, MAX_BOSS_BEAMS
+clr_bb: mov [esi].BossBeam.isActive, 0
+        add esi, TYPE BossBeam
+        dec ecx
+        jnz clr_bb
+
+    call InitWave
+    ret
+RestartGame ENDP
+
+WndProc PROC hwnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
+    LOCAL hdc:DWORD, ps:PAINTSTRUCT, mDC:DWORD, mBm:DWORD, oBm:DWORD
+    .IF uMsg == WM_DESTROY
+        invoke KillTimer, hwnd, 1
+        invoke PostQuitMessage, 0
+    .ELSEIF uMsg == WM_ERASEBKGND
+        mov eax, 1
         ret
+    .ELSEIF uMsg == WM_TIMER
+        call UpdateGame
+        invoke InvalidateRect, hwnd, NULL, FALSE
+    .ELSEIF uMsg == WM_PAINT
+        invoke BeginPaint, hwnd, ADDR ps
+        mov hdc, eax
+        invoke CreateCompatibleDC, hdc
+        mov mDC, eax
+        invoke CreateCompatibleBitmap, hdc, SCREEN_WIDTH, SCREEN_HEIGHT
+        mov mBm, eax
+        invoke SelectObject, mDC, mBm
+        mov oBm, eax
 
-    InitWave ENDP
+        invoke DrawRect, mDC, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK
+        invoke RenderGame, mDC
 
+        invoke BitBlt, hdc, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, mDC, 0, 0, SRCCOPY
+        invoke SelectObject, mDC, oBm
+        invoke DeleteObject, mBm
+        invoke DeleteDC, mDC
+        invoke EndPaint, hwnd, ADDR ps
+    .ELSEIF uMsg == WM_KEYDOWN
+        .IF wParam == VK_ESCAPE
+            invoke DestroyWindow, hwnd
+        .ELSEIF wParam == 'R'
+            .IF gameState != STATE_PLAY
+                call RestartGame
+            .ENDIF
+        .ELSEIF wParam == 'P'
+            .IF gameState == STATE_PLAY
+                mov eax, playerY
+                sub eax, 40
+                invoke SpawnPowerUp, playerX, eax
+            .ENDIF
+        .ELSEIF wParam == 'B'
+            .IF gameState == STATE_PLAY && currentWave < 4
+                mov currentWave, 4
+                
+                push esi
+                push ecx
+                mov esi, OFFSET enemyArr
+                mov ecx, MAX_ENEMIES
+            clr_e_cheat: 
+                mov [esi].Enemy.isActive, 0
+                add esi, TYPE Enemy
+                dec ecx
+                jnz clr_e_cheat
+                pop ecx
+                pop esi
+                
+                call InitWave
+            .ENDIF
+        .ENDIF
+    .ELSE
+        invoke DefWindowProc, hwnd, uMsg, wParam, lParam
+        ret
+    .ENDIF
+    xor eax, eax
+    ret
+WndProc ENDP
 
-    ; Main shii
-    MAIN PROC
-        ; get enemies ready
-        call InitWave
-        
-        ; get console handle for drawin shi directly on there
-        invoke GetConsoleWindow
-        invoke GetDC, eax
-        mov ebx, eax            ; save hdc in ebx to use later
-        
-    GAME_LOOP:
-        ; clear the previous frame
-        invoke DrawRect, ebx, 0, 0, SCREEN_WIDTH + 50, SCREEN_HEIGHT + 50, COLOR_BLACK
+WinMain PROC hInst:DWORD, hPrevInst:DWORD, cmdLine:DWORD, cmdShow:DWORD
+    LOCAL wc:WNDCLASSEX, msg:MSG, hwnd:DWORD
+    
+    invoke GetTickCount
+    mov randSeed, eax
+    
+    mov wc.cbSize, SIZEOF WNDCLASSEX
+    mov wc.style, CS_HREDRAW or CS_VREDRAW
+    mov wc.lpfnWndProc, OFFSET WndProc
+    mov wc.cbClsExtra, 0
+    mov wc.cbWndExtra, 0
+    mov eax, hInst
+    mov wc.hInstance, eax
+    mov wc.hbrBackground, COLOR_WINDOW+1
+    mov wc.lpszMenuName, NULL
+    mov wc.lpszClassName, OFFSET ClassName
+    
+    invoke LoadIcon, NULL, IDI_APPLICATION
+    mov wc.hIcon, eax
+    mov wc.hIconSm, eax
+    invoke LoadCursor, NULL, IDC_ARROW
+    mov wc.hCursor, eax
+    
+    invoke RegisterClassEx, ADDR wc
+    invoke CreateWindowEx, 0, ADDR ClassName, ADDR AppName, WS_OVERLAPPEDWINDOW, 100, 100, SCREEN_WIDTH, SCREEN_HEIGHT, NULL, NULL, hInst, NULL
+    mov hwnd, eax
+    
+    invoke SetTimer, hwnd, 1, 16, NULL
+    invoke ShowWindow, hwnd, SW_SHOWNORMAL
+    invoke UpdateWindow, hwnd
+    
+    mov esi, OFFSET starArr
+    mov ecx, MAX_STARS
+i_st: push ecx
+      invoke RandomRange, SCREEN_WIDTH
+      mov [esi].Star.posx, eax
+      invoke RandomRange, SCREEN_HEIGHT
+      mov [esi].Star.posy, eax
+      invoke RandomRange, 3
+      .IF eax == 0
+          mov [esi].Star.speed, 2
+          mov [esi].Star.starSize, 2
+          mov [esi].Star.color, COLOR_DARKGRAY
+      .ELSEIF eax == 1
+          mov [esi].Star.speed, 4
+          mov [esi].Star.starSize, 2
+          mov [esi].Star.color, COLOR_LIGHTGRAY
+      .ELSE
+          mov [esi].Star.speed, 8
+          mov [esi].Star.starSize, 3
+          mov [esi].Star.color, COLOR_WHITE
+      .ENDIF
+      pop ecx
+      add esi, TYPE Star
+      dec ecx
+      jnz i_st
 
-        ; handle everyone movin
-        call UpdateEnemyMovement
-        
-        ; draw the dudes
-        invoke RenderEnemies, ebx
-        
-        ; delay so it doesn't go zoomin instantly
-        invoke Sleep, 10        ; 10ms sleep
-        
-        ; check if we wanna quit (ESC key)
-        invoke GetAsyncKeyState, VK_ESCAPE
-        test eax, eax
-        jz GAME_LOOP
-        
-        ; cleanup and dip
-        invoke ReleaseDC, 0, ebx
-        invoke ExitProcess, 0
-    MAIN ENDP
+    call InitWave
 
-END MAIN
+ml: invoke GetMessage, ADDR msg, NULL, 0, 0
+    cmp eax, 0
+    je ex
+    invoke TranslateMessage, ADDR msg
+    invoke DispatchMessage, ADDR msg
+    jmp ml
+    
+ex: mov eax, msg.wParam
+    ret
+WinMain ENDP
+
+start:
+    invoke GetModuleHandle, NULL
+    invoke WinMain, eax, NULL, NULL, SW_SHOWDEFAULT
+    invoke ExitProcess, eax
+END start
