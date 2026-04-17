@@ -54,6 +54,7 @@ POWERUP_SPEED      EQU 3
 STATE_PLAY EQU 0
 STATE_DEAD EQU 1
 STATE_WIN  EQU 2
+STATE_TITLE EQU 3
 
 ; --------------------------------
 ; Structs (All DWORD aligned)
@@ -77,6 +78,7 @@ PowerUp STRUCT
     isActive DWORD ?
     posx DWORD ?
     posy DWORD ?
+    puType DWORD ? ; 0: Weapon, 1: Health
 PowerUp ENDS
 
 Star STRUCT
@@ -120,11 +122,16 @@ AppName   db "MASM Space Game - The Boss Expansion",0
 szGameOver db "GAME OVER",0
 szWin      db "SECTOR CLEARED! BOSS DEFEATED!",0
 szRestart  db "Press 'R' to Restart",0
+szTitle    db "SPACE WARS: THE BOSS EXPANSION",0
+szControls1 db "ARROWS to Move - SPACE to Shoot",0
+szControls2 db "Collect RED CROSS for Health",0
+szStartMsg db "Press ENTER to Start",0
 
 ; Game State
-gameState   DWORD STATE_PLAY
+gameState   DWORD STATE_TITLE
 frameCount  DWORD 0
 currentWave DWORD 1
+healthDropsInWave DWORD 0
 
 ; Enemy Stats
 enemyDir   DWORD 1
@@ -249,7 +256,7 @@ found_eb:
     ret
 SpawnEnemyBullet ENDP
 
-SpawnPowerUp PROC USES esi ecx pX:DWORD, pY:DWORD
+SpawnPowerUp PROC USES esi ecx pX:DWORD, pY:DWORD, pType:DWORD
     mov esi, OFFSET powerupArr
     mov ecx, MAX_POWERUPS
 find_pu:
@@ -266,10 +273,13 @@ found_pu:
     mov [esi].PowerUp.posx, eax
     mov eax, pY
     mov [esi].PowerUp.posy, eax
+    mov eax, pType
+    mov [esi].PowerUp.puType, eax
     ret
 SpawnPowerUp ENDP
 
 InitWave PROC USES esi ebx edi
+    mov healthDropsInWave, 0
     mov esi, OFFSET enemyArr
     mov ebx, 0
 
@@ -748,7 +758,7 @@ UpdateBoss PROC USES esi ecx ebx edi
         .ENDIF
 
     .ELSEIF bossState == 3
-        ; RED ATTACK LOGIC (Safe Square X and Y)
+        ; RED ATTACK LOGIC
         .IF bossTimer > 80 && bossTimer < 120
             mov eax, playerX
             mov ebx, bossSafeX
@@ -986,10 +996,19 @@ ce_lp:
     mov [edi].Enemy.isActive, 0
     invoke SpawnExplosion, [edi].Enemy.posx, [edi].Enemy.posy
     
-    invoke RandomRange, 50
+    invoke RandomRange, 30
+    cmp eax, 0
+    jne try_health
+    invoke SpawnPowerUp, [edi].Enemy.posx, [edi].Enemy.posy, 0
+    jmp dn_e
+  try_health:
+    cmp healthDropsInWave, 2
+    jge dn_e
+    invoke RandomRange, 8
     cmp eax, 0
     jne dn_e
-    invoke SpawnPowerUp, [edi].Enemy.posx, [edi].Enemy.posy
+    inc healthDropsInWave
+    invoke SpawnPowerUp, [edi].Enemy.posx, [edi].Enemy.posy, 1
     jmp dn_e 
 nx_pe:
     add edi, TYPE Enemy
@@ -1141,15 +1160,30 @@ up_lp:
     jg up_nxt
     
     mov [esi].PowerUp.isActive, 0
-    cmp weaponLevel, 3
-    jge up_nxt
-    inc weaponLevel
+    mov eax, [esi].PowerUp.puType
+    .IF eax == 1
+        .IF playerHealth < 5
+            inc playerHealth
+        .ENDIF
+    .ELSE
+        .IF weaponLevel < 3
+            inc weaponLevel
+        .ENDIF
+    .ENDIF
     jmp up_nxt
 k_pu: mov [esi].PowerUp.isActive, 0
 up_nxt:
     add esi, TYPE PowerUp
     dec ecx
     jnz up_lp
+
+    .IF gameState == STATE_TITLE
+        invoke GetAsyncKeyState, VK_RETURN
+        test eax, 8000h
+        jz g_end
+        mov gameState, STATE_PLAY
+        jmp g_end
+    .ENDIF
 
     cmp gameState, STATE_PLAY
     jne g_end
@@ -1167,333 +1201,529 @@ UpdateGame ENDP
 ; --- Rendering Base ---
 RenderGame PROC USES esi hdc:DWORD
     LOCAL animT:DWORD
-    LOCAL rcT:RECT     
+    LOCAL rcT:RECT
+    LOCAL tHeight:DWORD
+    LOCAL tColor:DWORD
+    LOCAL eColor:DWORD
 
     mov eax, frameCount
     shr eax, 4 
     and eax, 1
     mov animT, eax
 
-    mov esi, OFFSET starArr
-    mov ecx, MAX_STARS
-rs_lp:
-    push ecx
-    invoke DrawRect, hdc, [esi].Star.posx, [esi].Star.posy, [esi].Star.starSize, [esi].Star.starSize, [esi].Star.color
-    pop ecx
-    add esi, TYPE Star
-    dec ecx
-    jnz rs_lp
-
-    .IF gameState != STATE_DEAD
-        mov eax, playerY
-        add eax, 10
-        invoke DrawRect, hdc, playerX, eax, 40, 10, COLOR_BLUE
-        mov eax, playerX
-        add eax, 15
-        invoke DrawRect, hdc, eax, playerY, 10, 10, COLOR_BLUE
-        
-        mov ebx, 10
-        mov ecx, playerHealth
-        cmp ecx, 0
-        jle r_h_d
-    rh_lp:
+    .IF gameState != STATE_TITLE
+        mov esi, OFFSET starArr
+        mov ecx, MAX_STARS
+    rs_lp:
         push ecx
-        invoke DrawRect, hdc, ebx, 10, 15, 10, COLOR_BLUE
-        add ebx, 20
+        invoke DrawRect, hdc, [esi].Star.posx, [esi].Star.posy, [esi].Star.starSize, [esi].Star.starSize, [esi].Star.color
         pop ecx
+        add esi, TYPE Star
         dec ecx
-        jnz rh_lp
-    r_h_d:
+        jnz rs_lp
     .ENDIF
 
-    mov esi, OFFSET bulletArr
-    mov ecx, MAX_BULLETS
-rb_lp:
-    cmp [esi].Bullet.isActive, 0
-    je rb_nx
-    push ecx
-    invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, BULLET_WIDTH, BULLET_HEIGHT, COLOR_YELLOW
-    pop ecx
-rb_nx:
-    add esi, TYPE Bullet
-    dec ecx
-    jnz rb_lp
-
-    mov esi, OFFSET enemyBulletArr
-    mov ecx, MAX_ENEMY_BULLETS
-reb_lp:
-    cmp [esi].Bullet.isActive, 0
-    je reb_nx
-    push ecx
-    invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, ENEMY_BULLET_W, ENEMY_BULLET_H, COLOR_MAGENTA
-    pop ecx
-reb_nx:
-    add esi, TYPE Bullet
-    dec ecx
-    jnz reb_lp
-
-    mov esi, OFFSET powerupArr
-    mov ecx, MAX_POWERUPS
-rpu_lp:
-    cmp [esi].PowerUp.isActive, 0
-    je rpu_nx
-    push ecx
-    invoke DrawRect, hdc, [esi].PowerUp.posx, [esi].PowerUp.posy, POWERUP_SIZE, POWERUP_SIZE, COLOR_CYAN
-    pop ecx
-rpu_nx:
-    add esi, TYPE PowerUp
-    dec ecx
-    jnz rpu_lp
-
-    mov esi, OFFSET enemyArr
-    mov ecx, MAX_ENEMIES
-re_lp:
-    cmp [esi].Enemy.isActive, 0
-    je re_nx
-    push ecx
-    .IF [esi].Enemy.health > 6
-        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_MAGENTA
-    .ELSEIF [esi].Enemy.health > 4
-        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_RED
-    .ELSEIF [esi].Enemy.health > 2
-        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_ORANGE
-    .ELSE
-        invoke DrawRect, hdc, [esi].Enemy.posx, [esi].Enemy.posy, ENEMY_WIDTH, ENEMY_HEIGHT, COLOR_GREEN
-    .ENDIF
-    pop ecx
-re_nx:
-    add esi, TYPE Enemy
-    dec ecx
-    jnz re_lp
-
-    .IF bossActive == 1 && bossState != 6
-        cmp bossHP, 0
-        jle skp_bar
-        invoke DrawRect, hdc, 0, 0, bossHP, 8, COLOR_RED
-      skp_bar:
-
-        mov edx, COLOR_DARKGRAY
-        mov ebx, COLOR_DARKGRAY
-        .IF bossState == 1
-            mov ebx, COLOR_ORANGE  
-        .ELSEIF bossState == 2
-            mov edx, COLOR_MAGENTA 
-        .ELSEIF bossState == 3
-            mov ebx, COLOR_DARKRED
-            mov edx, COLOR_DARKRED
-        .ELSEIF bossState == 4
-            mov ebx, COLOR_CYAN
-            mov edx, COLOR_CYAN
-        .ELSEIF bossState == 5
-            mov ebx, COLOR_YELLOW
-            mov edx, COLOR_YELLOW
-        .ENDIF
-
-        invoke DrawRect, hdc, 200, 20, 400, 80, edx
-        invoke DrawRect, hdc, 150, 40, 50, 110, ebx
-        invoke DrawRect, hdc, 600, 40, 50, 110, ebx
-        
-        mov eax, COLOR_BLUE
-        .IF bossState == 1
-            mov eax, COLOR_ORANGE
-        .ELSEIF bossState == 2
-            mov eax, COLOR_MAGENTA
-        .ELSEIF bossState == 3
-            mov eax, COLOR_RED
-        .ELSEIF bossState == 4
-            mov eax, COLOR_CYAN
-        .ELSEIF bossState == 5
-            mov eax, COLOR_YELLOW
-        .ENDIF
-
-        .IF animT == 0
-            invoke DrawRect, hdc, 360, 60, 80, 40, eax
-        .ELSE
-            invoke DrawRect, hdc, 360, 60, 80, 40, COLOR_WHITE
-        .ENDIF
-
-        .IF bossShieldHP > 0
-            mov eax, bossShieldHP
-            shl eax, 4          
-            mov ebx, eax
-            shr ebx, 1
-            mov ecx, 400
-            sub ecx, ebx        
+    .IF gameState != STATE_TITLE
+        .IF gameState != STATE_DEAD
+            ; --- Player Spaceship Design ---
+            mov eax, playerX
+            add eax, 17
+            invoke DrawRect, hdc, eax, playerY, 6, 4, COLOR_WHITE
             
+            ; Main Body
+            mov eax, playerX
+            add eax, 15
+            mov ebx, playerY
+            add ebx, 4
+            invoke DrawRect, hdc, eax, ebx, 10, 16, COLOR_BLUE
+            
+            ; Wings
+            mov eax, playerY
+            add eax, 12
+            invoke DrawRect, hdc, playerX, eax, 15, 8, COLOR_DARKGRAY
+            mov eax, playerX
+            add eax, 25
+            mov ebx, playerY
+            add ebx, 12
+            invoke DrawRect, hdc, eax, ebx, 15, 8, COLOR_DARKGRAY
+            
+            ; Cockpit
+            mov eax, playerX
+            add eax, 18
+            mov ebx, playerY
+            add ebx, 6
+            invoke DrawRect, hdc, eax, ebx, 4, 4, COLOR_CYAN
+
+            ; --- Thruster Animation ---
+            mov tHeight, 5
+            mov tColor, COLOR_ORANGE
+            
+            ; Flame Flickering
+            mov eax, frameCount
+            and eax, 3
+            add tHeight, eax
+            
+            ; Movement Response
+            invoke GetAsyncKeyState, VK_UP
+            test eax, 8000h
+            jz check_flames_side
+            add tHeight, 10 ; Boost flames when moving up
+            mov tColor, COLOR_YELLOW
+            
+        check_flames_side:
+            ; Left Thruster
+            mov eax, playerX
+            add eax, 4
+            mov ebx, playerY
+            add ebx, 20
+            invoke DrawRect, hdc, eax, ebx, 7, tHeight, tColor
+            
+            ; Right Thruster
+            mov eax, playerX
+            add eax, 29
+            mov ebx, playerY
+            add ebx, 20
+            invoke DrawRect, hdc, eax, ebx, 7, tHeight, tColor
+            
+            ; HUD: Health
+            mov ebx, 10
+            mov ecx, playerHealth
+            cmp ecx, 0
+            jle r_h_d
+        rh_lp:
             push ecx
-            push eax
-            invoke DrawRect, hdc, ecx, 155, eax, 8, COLOR_CYAN
-            pop eax
+            invoke DrawRect, hdc, ebx, 10, 15, 10, COLOR_BLUE
+            add ebx, 20
             pop ecx
-            
-            add ecx, 5
-            .IF eax > 10
-                sub eax, 10
-                invoke DrawRect, hdc, ecx, 157, eax, 4, COLOR_WHITE
-            .ENDIF
+            dec ecx
+            jnz rh_lp
+        r_h_d:
         .ENDIF
 
-        .IF bossState == 1
-            .IF bossTimer <= 40
-                invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_DARKRED
-            .ELSE
-                invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_RED
-                mov eax, bossLaserX
-                add eax, 15
-                invoke DrawRect, hdc, eax, 100, 30, 600, COLOR_YELLOW
-            .ENDIF
-        .ELSEIF bossState == 3
-            ; RED WIPE VISUALS (SAFE SQUARE FIX)
-            .IF bossTimer <= 80
-                ; Warning pulse: 4 Rectangles around safe zone in DARKRED
-                mov eax, bossSafeY
-                sub eax, 150
-                invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_DARKRED
-                
-                mov eax, bossSafeY
-                add eax, 150
-                mov ebx, 600
-                sub ebx, eax
-                invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_DARKRED
-                
-                invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_DARKRED
-                
-                mov eax, bossSafeX
-                add eax, 150
-                mov ebx, 800
-                sub ebx, eax
-                invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_DARKRED
-            .ELSE
-                ; Blast Phase: 4 Rectangles in RED with WHITE cores
-                mov eax, bossSafeY
-                sub eax, 150
-                invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_RED
-                .IF eax > 20
-                    sub eax, 20
-                    invoke DrawRect, hdc, 10, 160, 780, eax, COLOR_WHITE
-                .ENDIF
-                
-                mov eax, bossSafeY
-                add eax, 150
-                mov ebx, 600
-                sub ebx, eax
-                push eax
-                push ebx
-                invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_RED
-                pop ebx
-                pop eax
-                .IF ebx > 20
-                    sub ebx, 20
-                    mov ecx, eax
-                    add ecx, 10
-                    invoke DrawRect, hdc, 10, ecx, 780, ebx, COLOR_WHITE
-                .ENDIF
-                
-                invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_RED
-                mov eax, bossSafeX
-                .IF eax > 20
-                    sub eax, 20
-                    mov ebx, bossSafeY
-                    add ebx, 10
-                    invoke DrawRect, hdc, 10, ebx, eax, 130, COLOR_WHITE
-                .ENDIF
-                
-                mov eax, bossSafeX
-                add eax, 150
-                mov ebx, 800
-                sub ebx, eax
-                push eax
-                push ebx
-                invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_RED
-                pop ebx
-                pop eax
-                .IF ebx > 20
-                    mov ecx, eax
-                    add ecx, 10
-                    sub ebx, 20
-                    mov edx, bossSafeY
-                    add edx, 10
-                    invoke DrawRect, hdc, ecx, edx, ebx, 130, COLOR_WHITE
-                .ENDIF
-            .ENDIF
-        .ELSEIF bossState == 5
-            .IF pelletActive == 1
-                .IF animT == 0
-                    invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_MAGENTA
-                .ELSE
-                    invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_WHITE
-                .ENDIF
-            .ENDIF
-        .ENDIF
-        
-        mov esi, OFFSET bossBeamArr
-        mov ecx, MAX_BOSS_BEAMS
-      r_bb_lp:
-        cmp [esi].BossBeam.isActive, 0
-        je r_bb_nx
+        mov esi, OFFSET bulletArr
+        mov ecx, MAX_BULLETS
+    rb_lp:
+        cmp [esi].Bullet.isActive, 0
+        je rb_nx
         push ecx
-        mov eax, [esi].BossBeam.timer
-        .IF eax < 20
-            mov ebx, [esi].BossBeam.posx
-            add ebx, 18
-            invoke DrawRect, hdc, ebx, 100, 4, 600, COLOR_CYAN
-        .ELSEIF eax <= 30
-            mov ebx, [esi].BossBeam.posx
-            invoke DrawRect, hdc, ebx, 100, 40, 600, COLOR_WHITE
-            add ebx, 10
-            invoke DrawRect, hdc, ebx, 100, 20, 600, COLOR_CYAN
+        invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, BULLET_WIDTH, BULLET_HEIGHT, COLOR_YELLOW
+        pop ecx
+    rb_nx:
+        add esi, TYPE Bullet
+        dec ecx
+        jnz rb_lp
+
+        mov esi, OFFSET enemyBulletArr
+        mov ecx, MAX_ENEMY_BULLETS
+    reb_lp:
+        cmp [esi].Bullet.isActive, 0
+        je reb_nx
+        push ecx
+        invoke DrawRect, hdc, [esi].Bullet.posx, [esi].Bullet.posy, ENEMY_BULLET_W, ENEMY_BULLET_H, COLOR_MAGENTA
+        pop ecx
+    reb_nx:
+        add esi, TYPE Bullet
+        dec ecx
+        jnz reb_lp
+
+        mov esi, OFFSET powerupArr
+        mov ecx, MAX_POWERUPS
+    rpu_lp:
+        cmp [esi].PowerUp.isActive, 0
+        je rpu_nx
+        push ecx
+        mov eax, [esi].PowerUp.puType
+        .IF eax == 1 ; Health
+            invoke DrawRect, hdc, [esi].PowerUp.posx, [esi].PowerUp.posy, POWERUP_SIZE, POWERUP_SIZE, COLOR_RED
+            mov eax, [esi].PowerUp.posx
+            add eax, 4
+            mov ebx, [esi].PowerUp.posy
+            add ebx, 2
+            invoke DrawRect, hdc, eax, ebx, 4, 8, COLOR_WHITE
+            mov eax, [esi].PowerUp.posx
+            add eax, 2
+            mov ebx, [esi].PowerUp.posy
+            add ebx, 4
+            invoke DrawRect, hdc, eax, ebx, 8, 4, COLOR_WHITE
+        .ELSE
+            invoke DrawRect, hdc, [esi].PowerUp.posx, [esi].PowerUp.posy, POWERUP_SIZE, POWERUP_SIZE, COLOR_CYAN
         .ENDIF
         pop ecx
-      r_bb_nx:
-        add esi, TYPE BossBeam
+    rpu_nx:
+        add esi, TYPE PowerUp
         dec ecx
-        jnz r_bb_lp
+        jnz rpu_lp
+
+        mov esi, OFFSET enemyArr
+        mov ecx, MAX_ENEMIES
+    re_lp:
+        cmp [esi].Enemy.isActive, 0
+        je re_nx
+        push ecx
+        .IF [esi].Enemy.health > 6
+            mov eax, COLOR_MAGENTA
+        .ELSEIF [esi].Enemy.health > 4
+            mov eax, COLOR_RED
+        .ELSEIF [esi].Enemy.health > 2
+            mov eax, COLOR_ORANGE
+        .ELSE
+            mov eax, COLOR_GREEN
+        .ENDIF
+        mov eColor, eax
+
+        ; --- Alien Enemy Design ---
+        ; Central Body
+        mov eax, [esi].Enemy.posx
+        add eax, 5
+        mov ebx, [esi].Enemy.posy
+        add ebx, 5
+        invoke DrawRect, hdc, eax, ebx, 20, 10, eColor
+        
+        ; Head
+        mov eax, [esi].Enemy.posx
+        add eax, 10
+        invoke DrawRect, hdc, eax, [esi].Enemy.posy, 10, 5, eColor
+        
+        ; Fins
+        mov eax, [esi].Enemy.posx
+        mov ebx, [esi].Enemy.posy
+        add ebx, 8
+        invoke DrawRect, hdc, eax, ebx, 5, 10, COLOR_DARKGRAY
+        mov eax, [esi].Enemy.posx
+        add eax, 25
+        mov ebx, [esi].Enemy.posy
+        add ebx, 8
+        invoke DrawRect, hdc, eax, ebx, 5, 10, COLOR_DARKGRAY
+        
+        ; Glowing Eyes
+        mov eax, [esi].Enemy.posx
+        add eax, 12
+        mov ebx, [esi].Enemy.posy
+        add ebx, 3
+        invoke DrawRect, hdc, eax, ebx, 2, 2, COLOR_YELLOW
+        mov eax, [esi].Enemy.posx
+        add eax, 17
+        mov ebx, [esi].Enemy.posy
+        add ebx, 3
+        invoke DrawRect, hdc, eax, ebx, 2, 2, COLOR_YELLOW
+
+        pop ecx
+    re_nx:
+        add esi, TYPE Enemy
+        dec ecx
+        jnz re_lp
+
+        .IF bossActive == 1 && bossState != 6
+            cmp bossHP, 0
+            jle skp_bar
+            invoke DrawRect, hdc, 0, 0, bossHP, 8, COLOR_RED
+          skp_bar:
+
+            mov edx, COLOR_DARKGRAY
+            mov ebx, COLOR_DARKGRAY
+            .IF bossState == 1
+                mov ebx, COLOR_ORANGE  
+            .ELSEIF bossState == 2
+                mov edx, COLOR_MAGENTA 
+            .ELSEIF bossState == 3
+                mov ebx, COLOR_DARKRED
+                mov edx, COLOR_DARKRED
+            .ELSEIF bossState == 4
+                mov ebx, COLOR_CYAN
+                mov edx, COLOR_CYAN
+            .ELSEIF bossState == 5
+                mov ebx, COLOR_YELLOW
+                mov edx, COLOR_YELLOW
+            .ENDIF
+
+            invoke DrawRect, hdc, 200, 20, 400, 80, edx
+            invoke DrawRect, hdc, 150, 40, 50, 110, ebx
+            invoke DrawRect, hdc, 600, 40, 50, 110, ebx
+            
+            mov eax, COLOR_BLUE
+            .IF bossState == 1
+                mov eax, COLOR_ORANGE
+            .ELSEIF bossState == 2
+                mov eax, COLOR_MAGENTA
+            .ELSEIF bossState == 3
+                mov eax, COLOR_RED
+            .ELSEIF bossState == 4
+                mov eax, COLOR_CYAN
+            .ELSEIF bossState == 5
+                mov eax, COLOR_YELLOW
+            .ENDIF
+
+            .IF animT == 0
+                invoke DrawRect, hdc, 360, 60, 80, 40, eax
+            .ELSE
+                invoke DrawRect, hdc, 360, 60, 80, 40, COLOR_WHITE
+            .ENDIF
+
+            .IF bossShieldHP > 0
+                mov eax, bossShieldHP
+                shl eax, 4          
+                mov ebx, eax
+                shr ebx, 1
+                mov ecx, 400
+                sub ecx, ebx        
+                
+                push ecx
+                push eax
+                invoke DrawRect, hdc, ecx, 155, eax, 8, COLOR_CYAN
+                pop eax
+                pop ecx
+                
+                add ecx, 5
+                .IF eax > 10
+                    sub eax, 10
+                    invoke DrawRect, hdc, ecx, 157, eax, 4, COLOR_WHITE
+                .ENDIF
+            .ENDIF
+
+            .IF bossState == 1
+                .IF bossTimer <= 40
+                    invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_DARKRED
+                .ELSE
+                    invoke DrawRect, hdc, bossLaserX, 100, 60, 600, COLOR_RED
+                    mov eax, bossLaserX
+                    add eax, 15
+                    invoke DrawRect, hdc, eax, 100, 30, 600, COLOR_YELLOW
+                .ENDIF
+            .ELSEIF bossState == 3
+                .IF bossTimer <= 80
+                    mov eax, bossSafeY
+                    sub eax, 150
+                    invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_DARKRED
+                    
+                    mov eax, bossSafeY
+                    add eax, 150
+                    mov ebx, 600
+                    sub ebx, eax
+                    invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_DARKRED
+                    
+                    invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_DARKRED
+                    
+                    mov eax, bossSafeX
+                    add eax, 150
+                    mov ebx, 800
+                    sub ebx, eax
+                    invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_DARKRED
+                .ELSE
+                    mov eax, bossSafeY
+                    sub eax, 150
+                    invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_RED
+                    .IF eax > 20
+                        sub eax, 20
+                        invoke DrawRect, hdc, 10, 160, 780, eax, COLOR_WHITE
+                    .ENDIF
+                    
+                    mov eax, bossSafeY
+                    add eax, 150
+                    mov ebx, 600
+                    sub ebx, eax
+                    push eax
+                    push ebx
+                    invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_RED
+                    pop ebx
+                    pop eax
+                    .IF ebx > 20
+                        sub ebx, 20
+                        mov ecx, eax
+                        add ecx, 10
+                        invoke DrawRect, hdc, 10, ecx, 780, ebx, COLOR_WHITE
+                    .ENDIF
+                    
+                    invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_RED
+                    mov eax, bossSafeX
+                    .IF eax > 20
+                        sub eax, 20
+                        mov ebx, bossSafeY
+                        add ebx, 10
+                        invoke DrawRect, hdc, 10, ebx, eax, 130, COLOR_WHITE
+                    .ENDIF
+                    
+                    mov eax, bossSafeX
+                    add eax, 150
+                    mov ebx, 800
+                    sub ebx, eax
+                    push eax
+                    push ebx
+                    invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_RED
+                    pop ebx
+                    pop eax
+                    .IF ebx > 20
+                        mov ecx, eax
+                        add ecx, 10
+                        sub ebx, 20
+                        mov edx, bossSafeY
+                        add edx, 10
+                        invoke DrawRect, hdc, ecx, edx, ebx, 130, COLOR_WHITE
+                    .ENDIF
+                .ENDIF
+            .ELSEIF bossState == 5
+                .IF pelletActive == 1
+                    .IF animT == 0
+                        invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_MAGENTA
+                    .ELSE
+                        invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_WHITE
+                    .ENDIF
+                .ENDIF
+            .ENDIF
+            
+            mov esi, OFFSET bossBeamArr
+            mov ecx, MAX_BOSS_BEAMS
+          r_bb_lp:
+            cmp [esi].BossBeam.isActive, 0
+            je r_bb_nx
+            push ecx
+            mov eax, [esi].BossBeam.timer
+            .IF eax < 20
+                mov ebx, [esi].BossBeam.posx
+                add ebx, 18
+                invoke DrawRect, hdc, ebx, 100, 4, 600, COLOR_CYAN
+            .ELSEIF eax <= 30
+                mov ebx, [esi].BossBeam.posx
+                invoke DrawRect, hdc, ebx, 100, 40, 600, COLOR_WHITE
+                add ebx, 10
+                invoke DrawRect, hdc, ebx, 100, 20, 600, COLOR_CYAN
+            .ENDIF
+            pop ecx
+          r_bb_nx:
+            add esi, TYPE BossBeam
+            dec ecx
+            jnz r_bb_lp
+        .ENDIF
     .ENDIF
 
-    mov esi, OFFSET explosionArr
-    mov ecx, MAX_EXPLOSIONS
-rx_lp:
-    cmp [esi].Explosion.isActive, 0
-    je rx_nx
-    push ecx
-    .IF [esi].Explosion.timer > 10
-        mov eax, [esi].Explosion.posx
-        sub eax, 5
-        mov ebx, [esi].Explosion.posy
-        sub ebx, 5
-        invoke DrawRect, hdc, eax, ebx, 30, 30, COLOR_YELLOW
-    .ELSEIF [esi].Explosion.timer > 5
-        invoke DrawRect, hdc, [esi].Explosion.posx, [esi].Explosion.posy, 20, 20, COLOR_ORANGE
-    .ELSE
-        mov eax, [esi].Explosion.posx
-        add eax, 5
-        mov ebx, [esi].Explosion.posy
-        add ebx, 5
-        invoke DrawRect, hdc, eax, ebx, 10, 10, COLOR_RED
+    .IF gameState != STATE_TITLE
+        mov esi, OFFSET explosionArr
+        mov ecx, MAX_EXPLOSIONS
+    rx_lp:
+        cmp [esi].Explosion.isActive, 0
+        je rx_nx
+        push ecx
+        .IF [esi].Explosion.timer > 10
+            mov eax, [esi].Explosion.posx
+            sub eax, 5
+            mov ebx, [esi].Explosion.posy
+            sub ebx, 5
+            invoke DrawRect, hdc, eax, ebx, 30, 30, COLOR_YELLOW
+        .ELSEIF [esi].Explosion.timer > 5
+            invoke DrawRect, hdc, [esi].Explosion.posx, [esi].Explosion.posy, 20, 20, COLOR_ORANGE
+        .ELSE
+            mov eax, [esi].Explosion.posx
+            add eax, 5
+            mov ebx, [esi].Explosion.posy
+            add ebx, 5
+            invoke DrawRect, hdc, eax, ebx, 10, 10, COLOR_RED
+        .ENDIF
+        pop ecx
+    rx_nx:
+        add esi, TYPE Explosion
+        dec ecx
+        jnz rx_lp
     .ENDIF
-    pop ecx
-rx_nx:
-    add esi, TYPE Explosion
-    dec ecx
-    jnz rx_lp
 
     .IF gameState != STATE_PLAY
         invoke SetBkMode, hdc, TRANSPARENT
         mov rcT.left, 0
         mov rcT.right, SCREEN_WIDTH
-        mov rcT.top, 250
-        mov rcT.bottom, 300
-        .IF gameState == STATE_DEAD
+        
+        .IF gameState == STATE_TITLE
+            ; --- Background ---
+            invoke DrawRect, hdc, 600, 480, 120, 80, COLOR_DARKGRAY
+            invoke DrawRect, hdc, 580, 500, 160, 40, COLOR_DARKGRAY
+            invoke DrawRect, hdc, 620, 460, 80, 100, COLOR_DARKGRAY
+            
+            ; Moon Craters
+            invoke DrawRect, hdc, 630, 490, 15, 10, COLOR_LIGHTGRAY
+            invoke DrawRect, hdc, 670, 520, 10, 10, COLOR_LIGHTGRAY
+            invoke DrawRect, hdc, 610, 510, 20, 15, COLOR_LIGHTGRAY
+            
+            ; Sun
+            invoke DrawRect, hdc, 45, 45, 40, 40, COLOR_YELLOW
+            invoke DrawRect, hdc, 55, 55, 20, 20, COLOR_WHITE
+            
+            ; Cyan Stars
+            invoke DrawRect, hdc, 200, 150, 3, 3, COLOR_CYAN
+            invoke DrawRect, hdc, 150, 400, 3, 3, COLOR_CYAN
+            invoke DrawRect, hdc, 400, 50, 3, 3, COLOR_CYAN
+            invoke DrawRect, hdc, 700, 200, 3, 3, COLOR_CYAN
+            invoke DrawRect, hdc, 550, 100, 3, 3, COLOR_CYAN
+            invoke DrawRect, hdc, 320, 450, 2, 2, COLOR_CYAN
+            invoke DrawRect, hdc, 680, 50, 2, 2, COLOR_CYAN
+            invoke DrawRect, hdc, 100, 280, 2, 2, COLOR_CYAN
+            
+            ; White Stars
+            invoke DrawRect, hdc, 50, 450, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 250, 500, 1, 1, COLOR_WHITE
+            invoke DrawRect, hdc, 750, 550, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 400, 300, 1, 1, COLOR_WHITE
+            invoke DrawRect, hdc, 600, 150, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 120, 50, 1, 1, COLOR_WHITE
+            invoke DrawRect, hdc, 30, 200, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 770, 300, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 10, 580, 2, 2, COLOR_WHITE
+            invoke DrawRect, hdc, 450, 580, 2, 2, COLOR_WHITE
+            
+            ; Yellow Stars
+            invoke DrawRect, hdc, 300, 80, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 100, 550, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 650, 400, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 720, 100, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 350, 520, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 10, 10, 1, 1, COLOR_YELLOW
+            invoke DrawRect, hdc, 790, 10, 1, 1, COLOR_YELLOW
+
+            ; Spaceship
+            invoke DrawRect, hdc, 175, 120, 50, 20, COLOR_BLUE     
+            invoke DrawRect, hdc, 150, 130, 100, 10, COLOR_DARKGRAY 
+            invoke DrawRect, hdc, 195, 115, 10, 10, COLOR_WHITE     
+            invoke DrawRect, hdc, 198, 125, 4, 4, COLOR_CYAN      
+            invoke DrawRect, hdc, 160, 140, 10, 8, COLOR_ORANGE  
+            invoke DrawRect, hdc, 230, 140, 10, 8, COLOR_ORANGE  
+
+            ; Nebula Band Streaks
+            invoke DrawRect, hdc, 0, 100, 800, 5, COLOR_DARKGRAY
+            invoke DrawRect, hdc, 0, 350, 800, 8, COLOR_DARKRED
+            invoke DrawRect, hdc, 0, 500, 800, 4, COLOR_DARKGRAY
+
+            invoke SetTextColor, hdc, COLOR_YELLOW
+            mov rcT.top, 150
+            mov rcT.bottom, 200
+            invoke DrawTextA, hdc, ADDR szTitle, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+            
+            invoke SetTextColor, hdc, COLOR_WHITE
+            mov rcT.top, 250
+            mov rcT.bottom, 280
+            invoke DrawTextA, hdc, ADDR szControls1, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+            
+            mov rcT.top, 290
+            mov rcT.bottom, 320
+            invoke DrawTextA, hdc, ADDR szControls2, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+            
+            invoke SetTextColor, hdc, COLOR_GREEN
+            mov rcT.top, 400
+            mov rcT.bottom, 450
+            invoke DrawTextA, hdc, ADDR szStartMsg, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        .ELSEIF gameState == STATE_DEAD
+            mov rcT.top, 250
+            mov rcT.bottom, 300
             invoke SetTextColor, hdc, COLOR_RED
             invoke DrawTextA, hdc, ADDR szGameOver, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
-        .ELSE
+        .ELSEIF gameState == STATE_WIN
+            mov rcT.top, 250
+            mov rcT.bottom, 300
             invoke SetTextColor, hdc, COLOR_GREEN
             invoke DrawTextA, hdc, ADDR szWin, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
         .ENDIF
-        invoke SetTextColor, hdc, COLOR_WHITE
-        mov rcT.top, 290
-        mov rcT.bottom, 340
-        invoke DrawTextA, hdc, ADDR szRestart, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        
+        .IF gameState != STATE_TITLE
+            invoke SetTextColor, hdc, COLOR_WHITE
+            mov rcT.top, 290
+            mov rcT.bottom, 340
+            invoke DrawTextA, hdc, ADDR szRestart, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+        .ENDIF
     .ENDIF
     ret
 RenderGame ENDP
@@ -1581,7 +1811,7 @@ WndProc PROC hwnd:DWORD, uMsg:DWORD, wParam:DWORD, lParam:DWORD
             .IF gameState == STATE_PLAY
                 mov eax, playerY
                 sub eax, 40
-                invoke SpawnPowerUp, playerX, eax
+                invoke SpawnPowerUp, playerX, eax, 0
             .ENDIF
         .ELSEIF wParam == 'B'
             .IF gameState == STATE_PLAY && currentWave < 4
