@@ -125,6 +125,7 @@ szRestart  db "Press 'R' to Restart",0
 szTitle    db "SPACE WARS: THE BOSS EXPANSION",0
 szControls1 db "ARROWS to Move - SPACE to Shoot",0
 szControls2 db "Collect RED CROSS for Health",0
+szControls3 db "Collect CYAN SQUARES for Weapon Upgrades",0
 szStartMsg db "Press ENTER to Start",0
 
 ; Game State
@@ -147,7 +148,7 @@ weaponLevel   DWORD 1
 
 ; Boss Stats
 bossActive   DWORD 0
-bossHP       DWORD 50     
+bossHP       DWORD 650
 bossShieldHP DWORD 0       
 bossState    DWORD 0
 bossTimer    DWORD 0
@@ -291,7 +292,7 @@ InitWave PROC USES esi ebx edi
         mov enemySpeed, 4
     .ELSEIF currentWave == 4
         mov bossActive, 1
-        mov bossHP, 50
+        mov bossHP, 650
         mov bossShieldHP, 25
         mov bossState, 0
         mov bossTimer, 0
@@ -673,25 +674,22 @@ UpdateBoss PROC USES esi ecx ebx edi
             jne skip_shield
             mov bossShieldHP, 25
           skip_shield:
-
+			mov eax, bossState
             .IF eax == 1
                 mov bossLaserX, 400
             .ELSEIF eax == 3
-                ; RED ATTACK SETUP: Safe X and Y boundaries
-                invoke RandomRange, 650
+                ; RED ATTACK SETUP: Safe Column
+                invoke RandomRange, 680 ; Max width 800, leaving 120 width safezone
                 mov bossSafeX, eax
-                invoke RandomRange, 250
-                add eax, 250
-                mov bossSafeY, eax
             .ELSEIF eax == 5
-                ; PELLET SETUP: Constrained strictly on screen
+                ; PELLET SETUP: Constrained firmly onto the readable screen
                 mov pelletX, 400
                 mov pelletY, 150
-                invoke RandomRange, 700
-                add eax, 50
+                invoke RandomRange, 500
+                add eax, 150
                 mov targetPelletX, eax
                 invoke RandomRange, 250
-                add eax, 250
+                add eax, 200
                 mov targetPelletY, eax
                 mov pelletActive, 1
                 mov pelletBurstCount, 0
@@ -758,26 +756,19 @@ UpdateBoss PROC USES esi ecx ebx edi
         .ENDIF
 
     .ELSEIF bossState == 3
-        ; RED ATTACK LOGIC
+        ; RED ATTACK LOGIC (Safe Column Detection)
         .IF bossTimer > 80 && bossTimer < 120
             mov eax, playerX
             mov ebx, bossSafeX
+            
+            ; Check left kill zone overlap
             .IF eax < ebx
-                jmp kill_p3
-            .ENDIF
-            add eax, PLAYER_WIDTH
-            add ebx, 150
-            .IF eax > ebx
                 jmp kill_p3
             .ENDIF
             
-            mov eax, playerY
-            mov ebx, bossSafeY
-            .IF eax < ebx
-                jmp kill_p3
-            .ENDIF
-            add eax, PLAYER_HEIGHT
-            add ebx, 150
+            ; Check right kill zone overlap
+            add eax, PLAYER_WIDTH
+            add ebx, 120
             .IF eax > ebx
                 jmp kill_p3
             .ENDIF
@@ -1205,6 +1196,9 @@ RenderGame PROC USES esi hdc:DWORD
     LOCAL tHeight:DWORD
     LOCAL tColor:DWORD
     LOCAL eColor:DWORD
+    LOCAL baseColor:DWORD
+    LOCAL accentColor:DWORD
+    LOCAL coreColor:DWORD
 
     mov eax, frameCount
     shr eax, 4 
@@ -1419,46 +1413,70 @@ RenderGame PROC USES esi hdc:DWORD
             invoke DrawRect, hdc, 0, 0, bossHP, 8, COLOR_RED
           skp_bar:
 
-            mov edx, COLOR_DARKGRAY
-            mov ebx, COLOR_DARKGRAY
+            ; Resolve boss colors into local vars for safe invocation
+            mov baseColor, COLOR_DARKGRAY
+            mov accentColor, COLOR_DARKGRAY
+            mov coreColor, COLOR_BLUE
+
             .IF bossState == 1
-                mov ebx, COLOR_ORANGE  
+                mov accentColor, COLOR_ORANGE
+                mov coreColor, COLOR_ORANGE
             .ELSEIF bossState == 2
-                mov edx, COLOR_MAGENTA 
+                mov baseColor, COLOR_MAGENTA
+                mov coreColor, COLOR_MAGENTA
             .ELSEIF bossState == 3
-                mov ebx, COLOR_DARKRED
-                mov edx, COLOR_DARKRED
+                mov accentColor, COLOR_DARKRED
+                mov baseColor, COLOR_DARKRED
+                mov coreColor, COLOR_RED
             .ELSEIF bossState == 4
-                mov ebx, COLOR_CYAN
-                mov edx, COLOR_CYAN
+                mov accentColor, COLOR_CYAN
+                mov baseColor, COLOR_CYAN
+                mov coreColor, COLOR_CYAN
             .ELSEIF bossState == 5
-                mov ebx, COLOR_YELLOW
-                mov edx, COLOR_YELLOW
+                mov accentColor, COLOR_YELLOW
+                mov baseColor, COLOR_YELLOW
+                mov coreColor, COLOR_YELLOW
             .ENDIF
 
-            invoke DrawRect, hdc, 200, 20, 400, 80, edx
-            invoke DrawRect, hdc, 150, 40, 50, 110, ebx
-            invoke DrawRect, hdc, 600, 40, 50, 110, ebx
+            ; --- Enhanced Alien Dreadnought Boss Rendering ---
             
-            mov eax, COLOR_BLUE
-            .IF bossState == 1
-                mov eax, COLOR_ORANGE
-            .ELSEIF bossState == 2
-                mov eax, COLOR_MAGENTA
-            .ELSEIF bossState == 3
-                mov eax, COLOR_RED
-            .ELSEIF bossState == 4
-                mov eax, COLOR_CYAN
-            .ELSEIF bossState == 5
-                mov eax, COLOR_YELLOW
-            .ENDIF
+            ; Main Hull Upper / Lower
+            invoke DrawRect, hdc, 250, 10, 300, 60, COLOR_DARKGRAY
+            invoke DrawRect, hdc, 200, 70, 400, 40, baseColor
+            invoke DrawRect, hdc, 320, 110, 160, 30, baseColor
+            
+            ; Secondary Wings and Plating
+            invoke DrawRect, hdc, 120, 30, 80, 90, accentColor
+            invoke DrawRect, hdc, 600, 30, 80, 90, accentColor
+            invoke DrawRect, hdc, 80, 60, 40, 80, COLOR_DARKGRAY
+            invoke DrawRect, hdc, 680, 60, 40, 80, COLOR_DARKGRAY
 
+            ; Twin Heavy Cannons
+            invoke DrawRect, hdc, 140, 120, 40, 50, COLOR_BLACK
+            invoke DrawRect, hdc, 150, 170, 20, 20, COLOR_RED
+            invoke DrawRect, hdc, 620, 120, 40, 50, COLOR_BLACK
+            invoke DrawRect, hdc, 630, 170, 20, 20, COLOR_RED
+            
+            ; Hull Detailing
+            invoke DrawRect, hdc, 260, 20, 280, 5, COLOR_LIGHTGRAY
+            invoke DrawRect, hdc, 260, 40, 280, 5, COLOR_LIGHTGRAY
+            
+            ; Menacing Eyes
+            invoke DrawRect, hdc, 280, 80, 30, 15, COLOR_YELLOW
+            invoke DrawRect, hdc, 490, 80, 30, 15, COLOR_YELLOW
+            invoke DrawRect, hdc, 290, 85, 10, 5, COLOR_RED
+            invoke DrawRect, hdc, 500, 85, 10, 5, COLOR_RED
+
+            ; Pulsing Central Power Core
             .IF animT == 0
-                invoke DrawRect, hdc, 360, 60, 80, 40, eax
+                invoke DrawRect, hdc, 360, 80, 80, 50, coreColor
+                invoke DrawRect, hdc, 380, 90, 40, 30, COLOR_WHITE
             .ELSE
-                invoke DrawRect, hdc, 360, 60, 80, 40, COLOR_WHITE
+                invoke DrawRect, hdc, 360, 80, 80, 50, COLOR_WHITE
+                invoke DrawRect, hdc, 380, 90, 40, 30, coreColor
             .ENDIF
 
+            ; Boss Forcefield Shield Render
             .IF bossShieldHP > 0
                 mov eax, bossShieldHP
                 shl eax, 4          
@@ -1469,14 +1487,14 @@ RenderGame PROC USES esi hdc:DWORD
                 
                 push ecx
                 push eax
-                invoke DrawRect, hdc, ecx, 155, eax, 8, COLOR_CYAN
+                invoke DrawRect, hdc, ecx, 200, eax, 8, COLOR_CYAN
                 pop eax
                 pop ecx
                 
                 add ecx, 5
                 .IF eax > 10
                     sub eax, 10
-                    invoke DrawRect, hdc, ecx, 157, eax, 4, COLOR_WHITE
+                    invoke DrawRect, hdc, ecx, 202, eax, 4, COLOR_WHITE
                 .ENDIF
             .ENDIF
 
@@ -1490,82 +1508,49 @@ RenderGame PROC USES esi hdc:DWORD
                     invoke DrawRect, hdc, eax, 100, 30, 600, COLOR_YELLOW
                 .ENDIF
             .ELSEIF bossState == 3
+                ; Render left/right bounds around the safe column BELOW the boss
+                ; Start at Y=210, Height=390 (600 - 210 = 390)
                 .IF bossTimer <= 80
-                    mov eax, bossSafeY
-                    sub eax, 150
-                    invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_DARKRED
+                    invoke DrawRect, hdc, 0, 210, bossSafeX, 390, COLOR_DARKRED
                     
-                    mov eax, bossSafeY
-                    add eax, 150
-                    mov ebx, 600
-                    sub ebx, eax
-                    invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_DARKRED
-                    
-                    invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_DARKRED
-                    
+                    ; Right kill zone width calculation
+                    mov ecx, 800
+                    sub ecx, bossSafeX
+                    sub ecx, 120
+                    push ecx
                     mov eax, bossSafeX
-                    add eax, 150
-                    mov ebx, 800
-                    sub ebx, eax
-                    invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_DARKRED
+                    add eax, 120
+                    pop ecx
+                    invoke DrawRect, hdc, eax, 210, ecx, 390, COLOR_DARKRED
                 .ELSE
-                    mov eax, bossSafeY
-                    sub eax, 150
-                    invoke DrawRect, hdc, 0, 150, 800, eax, COLOR_RED
-                    .IF eax > 20
-                        sub eax, 20
-                        invoke DrawRect, hdc, 10, 160, 780, eax, COLOR_WHITE
-                    .ENDIF
+                    invoke DrawRect, hdc, 0, 210, bossSafeX, 390, COLOR_RED
                     
-                    mov eax, bossSafeY
-                    add eax, 150
-                    mov ebx, 600
-                    sub ebx, eax
-                    push eax
-                    push ebx
-                    invoke DrawRect, hdc, 0, eax, 800, ebx, COLOR_RED
-                    pop ebx
-                    pop eax
-                    .IF ebx > 20
-                        sub ebx, 20
-                        mov ecx, eax
-                        add ecx, 10
-                        invoke DrawRect, hdc, 10, ecx, 780, ebx, COLOR_WHITE
-                    .ENDIF
-                    
-                    invoke DrawRect, hdc, 0, bossSafeY, bossSafeX, 150, COLOR_RED
+                    ; Right kill zone width calculation
+                    mov ecx, 800
+                    sub ecx, bossSafeX
+                    sub ecx, 120
+                    push ecx
                     mov eax, bossSafeX
-                    .IF eax > 20
-                        sub eax, 20
-                        mov ebx, bossSafeY
-                        add ebx, 10
-                        invoke DrawRect, hdc, 10, ebx, eax, 130, COLOR_WHITE
-                    .ENDIF
+                    add eax, 120
+                    pop ecx
+                    invoke DrawRect, hdc, eax, 210, ecx, 390, COLOR_RED
                     
-                    mov eax, bossSafeX
-                    add eax, 150
-                    mov ebx, 800
-                    sub ebx, eax
-                    push eax
-                    push ebx
-                    invoke DrawRect, hdc, eax, bossSafeY, ebx, 150, COLOR_RED
-                    pop ebx
-                    pop eax
-                    .IF ebx > 20
-                        mov ecx, eax
-                        add ecx, 10
-                        sub ebx, 20
-                        mov edx, bossSafeY
-                        add edx, 10
-                        invoke DrawRect, hdc, ecx, edx, ebx, 130, COLOR_WHITE
+                    ; Inner Warning Borders
+                    .IF bossSafeX > 5
+                        mov eax, bossSafeX
+                        sub eax, 5
+                        invoke DrawRect, hdc, eax, 210, 5, 390, COLOR_WHITE
                     .ENDIF
+                    mov eax, bossSafeX
+                    add eax, 120
+                    invoke DrawRect, hdc, eax, 210, 5, 390, COLOR_WHITE
                 .ENDIF
             .ELSEIF bossState == 5
                 .IF pelletActive == 1
                     .IF animT == 0
                         invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_MAGENTA
                     .ELSE
-                        invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_WHITE
+                        invoke DrawRect, hdc, pelletX, pelletY, 20, 20, COLOR_YELLOW
                     .ENDIF
                 .ENDIF
             .ENDIF
@@ -1698,13 +1683,17 @@ RenderGame PROC USES esi hdc:DWORD
             mov rcT.bottom, 280
             invoke DrawTextA, hdc, ADDR szControls1, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
             
-            mov rcT.top, 290
-            mov rcT.bottom, 320
+            mov rcT.top, 280
+            mov rcT.bottom, 310
             invoke DrawTextA, hdc, ADDR szControls2, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
             
+            mov rcT.top, 310
+            mov rcT.bottom, 340
+            invoke DrawTextA, hdc, ADDR szControls3, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
+            
             invoke SetTextColor, hdc, COLOR_GREEN
-            mov rcT.top, 400
-            mov rcT.bottom, 450
+            mov rcT.top, 420
+            mov rcT.bottom, 470
             invoke DrawTextA, hdc, ADDR szStartMsg, -1, ADDR rcT, DT_CENTER or DT_VCENTER or DT_SINGLELINE
         .ELSEIF gameState == STATE_DEAD
             mov rcT.top, 250
